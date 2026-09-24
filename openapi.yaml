@@ -1,0 +1,243 @@
+openapi: 3.0.3
+info:
+  title: Harvester Runner Gateway
+  version: 1.0.0
+  description: Run-scoped VM and volume operations for approved GitHub Actions jobs.
+servers:
+  - url: https://gateway.example.internal:8443
+security:
+  - githubOIDC: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses:
+        "204": {description: Process is alive}
+  /readyz:
+    get:
+      security: []
+      responses:
+        "204": {description: Harvester API is reachable}
+        "503": {description: Harvester API is unavailable}
+  /v1/quota:
+    get:
+      responses:
+        "200":
+          description: Active resources and limits for this workflow run attempt
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Quota"}
+  /v1/vms:
+    get:
+      responses:
+        "200":
+          description: Run-owned VMs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/VMStatus"}
+    post:
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/VMRequest"}
+      responses:
+        "201":
+          description: VM resource created; provisioning may continue
+          headers:
+            Location:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VMStatus"}
+        "200": {description: Existing VM returned for the same idempotency key and request}
+        "409": {description: Quota or idempotency conflict}
+        "422": {description: Invalid VM specification}
+  /v1/vms/{id}:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+    get:
+      responses:
+        "200":
+          description: VM status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VMStatus"}
+        "404": {description: VM absent or not owned by this run attempt}
+    delete:
+      responses:
+        "204": {description: Deletion requested}
+        "404": {description: VM absent or not owned by this run attempt}
+  /v1/vms/{id}/power:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+    put:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [state]
+              properties:
+                state: {type: string, enum: ["on", "off"]}
+      responses:
+        "202": {description: Desired power action accepted}
+        "404": {description: VM absent or not owned by this run attempt}
+  /v1/vms/{id}/reboot:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+    post:
+      responses:
+        "202": {description: Reboot accepted}
+        "409": {description: VM is powered off or busy}
+        "404": {description: VM absent or not owned by this run attempt}
+  /v1/vms/{id}/volumes/{volumeID}:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+      - $ref: "#/components/parameters/AttachedVolumeID"
+    put:
+      responses:
+        "202": {description: Live SCSI attachment accepted}
+        "409": {description: VM or volume not ready, or volume attached elsewhere}
+        "404": {description: Resource absent or not owned by this run attempt}
+    delete:
+      responses:
+        "202": {description: Detachment accepted}
+        "404": {description: Resource absent or not owned by this run attempt}
+  /v1/volumes:
+    get:
+      responses:
+        "200":
+          description: Run-owned independent volumes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/VolumeStatus"}
+    post:
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/VolumeRequest"}
+      responses:
+        "201":
+          description: Volume resource created; provisioning may continue
+          headers:
+            Location:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VolumeStatus"}
+        "200": {description: Existing volume returned for the same idempotency key and request}
+        "409": {description: Quota or idempotency conflict}
+        "422": {description: Invalid volume specification}
+  /v1/volumes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/VolumeID"
+    get:
+      responses:
+        "200":
+          description: Volume status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VolumeStatus"}
+        "404": {description: Volume absent or not owned by this run attempt}
+    delete:
+      responses:
+        "204": {description: Deletion requested}
+        "409": {description: Volume is attached; detach it first}
+        "404": {description: Volume absent or not owned by this run attempt}
+components:
+  securitySchemes:
+    githubOIDC:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: GitHub Actions OIDC JWT for the configured audience.
+  parameters:
+    VMID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+    VolumeID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+    AttachedVolumeID:
+      name: volumeID
+      in: path
+      required: true
+      schema: {type: string}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 128}
+  schemas:
+    VMRequest:
+      type: object
+      additionalProperties: false
+      required: [image, network, cpu, memory, bootDiskSize]
+      properties:
+        image: {type: string, description: Approved namespace/name Harvester image}
+        network: {type: string, description: Approved namespace/name network}
+        cpu: {type: integer, minimum: 1}
+        memory: {type: string, example: 4Gi}
+        bootDiskSize: {type: string, example: 20Gi}
+        sshPublicKeys:
+          type: array
+          maxItems: 10
+          items: {type: string}
+        userData: {type: string, description: Cloud-config YAML, at most 64 KiB}
+        ttlSeconds: {type: integer, minimum: 1, maximum: 86400, default: 21600}
+    VolumeRequest:
+      type: object
+      additionalProperties: false
+      required: [size]
+      properties:
+        size: {type: string, example: 10Gi}
+        ttlSeconds: {type: integer, minimum: 1, maximum: 86400, default: 21600}
+    VMStatus:
+      type: object
+      required: [id, phase, powerState, ipAddresses, attachedVolumeIDs, expiresAt]
+      properties:
+        id: {type: string}
+        phase: {type: string}
+        powerState: {type: string, enum: ["on", "off"]}
+        ipAddresses:
+          type: array
+          items: {type: string}
+        attachedVolumeIDs:
+          type: array
+          items: {type: string}
+        message: {type: string}
+        expiresAt: {type: string, format: date-time}
+    VolumeStatus:
+      type: object
+      required: [id, phase, size, expiresAt]
+      properties:
+        id: {type: string}
+        phase: {type: string}
+        size: {type: string}
+        attachedTo: {type: string}
+        attachmentPhase: {type: string}
+        expiresAt: {type: string, format: date-time}
+    Quota:
+      type: object
+      required: [maxActiveVMs, activeVMs, maxActiveVolumes, activeVolumes]
+      properties:
+        maxActiveVMs: {type: integer, minimum: 0}
+        activeVMs: {type: integer, minimum: 0}
+        maxActiveVolumes: {type: integer, minimum: 0}
+        activeVolumes: {type: integer, minimum: 0}

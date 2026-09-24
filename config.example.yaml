@@ -1,0 +1,28 @@
+listenAddress: ":8443"
+tls:
+  certFile: /run/secrets/gateway/tls.crt
+  keyFile: /run/secrets/gateway/tls.key
+kubeconfig: /run/secrets/harvester/kubeconfig
+oidc:
+  issuer: https://token.actions.githubusercontent.com
+  audience: api://harvester-runner-gateway
+repositories:
+  - repositoryID: "123456789"
+    namespace: ci-vms
+    allowedWorkflowRefs:
+      - example/project/.github/workflows/harvester-test.yml@refs/heads/main
+    allowedEvents:
+      - workflow_dispatch
+    images:
+      - default/ubuntu-24-04
+    networks:
+      - default/vm-network
+    storageClass: longhorn
+    defaultUser: ubuntu
+    maxCPU: 4
+    maxMemory: 8Gi
+    maxBootDiskSize: 40Gi
+    maxVolumeSize: 100Gi
+    quota:
+      maxActiveVMs: 2
+      maxActiveVolumes: 4
