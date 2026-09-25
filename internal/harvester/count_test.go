@@ -16,9 +16,11 @@ import (
 	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
-func TestCountsUseOwnedClusterObjectsWithoutStatusLookups(t *testing.T) {
+func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
-	other := auth.Owner{RepositoryID: "123", RunID: "789", RunAttempt: "1"}
+	otherRun := auth.Owner{RepositoryID: "123", RunID: "789", RunAttempt: "1"}
+	otherAttempt := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "2"}
+	otherRepo := auth.Owner{RepositoryID: "999", RunID: "456", RunAttempt: "1"}
 	vm := func(name string, labels map[string]string) *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
@@ -29,8 +31,11 @@ func TestCountsUseOwnedClusterObjectsWithoutStatusLookups(t *testing.T) {
 		map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList"},
 		vm("owned-1", ownerLabels(owner, "vm")),
 		vm("owned-2", ownerLabels(owner, "vm")),
-		vm("other-run", ownerLabels(other, "vm")),
+		vm("other-run", ownerLabels(otherRun, "vm")),
+		vm("other-attempt", ownerLabels(otherAttempt, "vm")),
+		vm("other-repo", ownerLabels(otherRepo, "vm")),
 		vm("other-kind", ownerLabels(owner, "other")),
+		vm("unmanaged", map[string]string{repoLabel: owner.RepositoryID, kindLabel: "vm"}),
 	)
 	pvc := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
 		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
@@ -39,19 +44,22 @@ func TestCountsUseOwnedClusterObjectsWithoutStatusLookups(t *testing.T) {
 	}
 	kube := kubefake.NewClientset(
 		pvc("owned-volume", ownerLabels(owner, "volume")),
+		pvc("other-run-volume", ownerLabels(otherRun, "volume")),
+		pvc("other-attempt-volume", ownerLabels(otherAttempt, "volume")),
 		pvc("root-disk", ownerLabels(owner, "vm-root")),
-		pvc("other-volume", ownerLabels(other, "volume")),
+		pvc("other-repo-volume", ownerLabels(otherRepo, "volume")),
+		pvc("unmanaged-volume", map[string]string{repoLabel: owner.RepositoryID, kindLabel: "volume"}),
 	)
 	backend := &Backend{dynamic: dynamicClient, kube: kube}
-	policy := config.RepositoryPolicy{Namespace: "ci"}
+	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci"}
 
-	vms, err := backend.CountVMs(context.Background(), policy, owner)
-	if err != nil || vms != 2 {
-		t.Fatalf("VM count = %d, error = %v; want 2", vms, err)
+	vms, err := backend.CountVMs(context.Background(), policy)
+	if err != nil || vms != 4 {
+		t.Fatalf("VM count = %d, error = %v; want 4", vms, err)
 	}
-	volumes, err := backend.CountVolumes(context.Background(), policy, owner)
-	if err != nil || volumes != 1 {
-		t.Fatalf("volume count = %d, error = %v; want 1", volumes, err)
+	volumes, err := backend.CountVolumes(context.Background(), policy)
+	if err != nil || volumes != 3 {
+		t.Fatalf("volume count = %d, error = %v; want 3", volumes, err)
 	}
 	if actions := dynamicClient.Actions(); len(actions) != 1 || actions[0].GetVerb() != "list" || actions[0].GetResource().Resource != "virtualmachines" {
 		t.Fatalf("unexpected dynamic client actions: %v", actions)

@@ -140,6 +140,11 @@ func ownerSelector(owner auth.Owner, kind string) string {
 		repoLabel, owner.RepositoryID, runLabel, owner.RunID, attemptLabel, owner.RunAttempt, kindLabel, kind)
 }
 
+func repositorySelector(repositoryID, kind string) string {
+	return fmt.Sprintf("%s=%s,%s=%s,%s=%s", managedLabel, managedValue,
+		repoLabel, repositoryID, kindLabel, kind)
+}
+
 func owned(labels map[string]string, owner auth.Owner, kind string) bool {
 	return labels[managedLabel] == managedValue && labels[repoLabel] == owner.RepositoryID &&
 		labels[runLabel] == owner.RunID && labels[attemptLabel] == owner.RunAttempt && labels[kindLabel] == kind

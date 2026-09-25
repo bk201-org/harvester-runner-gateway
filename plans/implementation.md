@@ -13,7 +13,8 @@ the Harvester kubeconfig; jobs never receive cluster credentials.
   self-hosted runner environment, and administrator-allowed workflow refs and
   event types. No GitHub PAT is needed.
 - Map each approved repository ID to one namespace. Repository ID, run ID, and
-  run attempt form the owner; jobs in that run attempt share resources and quota.
+  run attempt form the resource owner; jobs in that run attempt share resources.
+  All runs and attempts of the repository share its quota.
 - Offer create, list, get, and delete for VMs and volumes; VM power on/off and
   reboot; and volume attach/detach. Generate resource IDs on the server. Creates
   return immediately and clients poll status.
@@ -24,9 +25,10 @@ the Harvester kubeconfig; jobs never receive cluster credentials.
 ## Quota and lifecycle
 
 - Each repository policy has quota.maxActiveVMs (N) and quota.maxActiveVolumes
-  (M). The quota owner is one workflow run attempt. Pending and deleting
-  resources count until their Kubernetes objects disappear. Deletion frees a
-  slot. VM boot disks are covered by N; M counts only volume API resources.
+  (M). Quota applies across all workflow runs and attempts of the repository.
+  Pending and deleting resources count until their Kubernetes objects
+  disappear. Deletion frees a slot. VM boot disks are covered by N; M counts
+  only volume API resources.
 - Keep quota as a separate policy structure to add dimensions later. Return
   current usage and limits from GET /v1/quota. Serialize quota checks and
   creates in a single v1 gateway instance.

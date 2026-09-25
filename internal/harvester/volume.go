@@ -36,8 +36,9 @@ func (b *Backend) listOwnedVolumes(ctx context.Context, policy config.Repository
 	return b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "volume")})
 }
 
-func (b *Backend) CountVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (int, error) {
-	list, err := b.listOwnedVolumes(ctx, policy, owner)
+func (b *Backend) CountVolumes(ctx context.Context, policy config.RepositoryPolicy) (int, error) {
+	list, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx,
+		metav1.ListOptions{LabelSelector: repositorySelector(policy.RepositoryID, "volume")})
 	if err != nil {
 		return 0, err
 	}

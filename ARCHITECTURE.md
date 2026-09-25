@@ -22,8 +22,9 @@ Every resource request passes through the OIDC verifier. It checks the token's
 signature, issuer, audience, time claims, repository ID, runner environment,
 workflow reference, and event name against the configured repository policy.
 The numeric repository ID, run ID, and run attempt identify the owner. Jobs in
-the same run attempt share resources and quota. Each repository policy selects
-the namespace and allowed resource settings.
+the same run attempt share resources. All runs and attempts of a repository
+share its quota. Each repository policy selects the namespace and allowed
+resource settings.
 
 Created VMs, independent volume PVCs, boot disk PVCs, and cloud-init Secrets
 carry labels identifying the gateway, owner, and resource kind. Their annotations
@@ -63,11 +64,12 @@ address does not establish that SSH or a guest service is ready.
 
 ## Quota and lifecycle
 
-The gateway counts owner-labeled VMs and independent volume PVCs by listing
-cluster objects. Count queries do not fetch VMIs or resolve volume attachments;
-full status reads still do. Provisioning and deleting objects continue to count until
-they disappear. Each VM consumes one VM quota slot; its boot disk PVC is not
-counted separately. A process-local mutex serializes quota checks with creates, so
+The gateway counts VMs and independent volume PVCs labeled for the repository
+across all runs and attempts by listing cluster objects. Count queries do not
+fetch VMIs or resolve volume attachments; full status reads still do.
+Provisioning and deleting objects continue to count until they disappear. Each
+VM consumes one VM quota slot; its boot disk PVC is not counted separately. A
+process-local mutex serializes quota checks with creates, so
 the current design requires one gateway instance for reliable quota enforcement.
 That mutex does not store resource status.
 

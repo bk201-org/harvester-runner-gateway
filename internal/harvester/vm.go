@@ -37,8 +37,9 @@ func (b *Backend) listOwnedVMs(ctx context.Context, policy config.RepositoryPoli
 	return b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "vm")})
 }
 
-func (b *Backend) CountVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (int, error) {
-	list, err := b.listOwnedVMs(ctx, policy, owner)
+func (b *Backend) CountVMs(ctx context.Context, policy config.RepositoryPolicy) (int, error) {
+	list, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx,
+		metav1.ListOptions{LabelSelector: repositorySelector(policy.RepositoryID, "vm")})
 	if err != nil {
 		return 0, err
 	}

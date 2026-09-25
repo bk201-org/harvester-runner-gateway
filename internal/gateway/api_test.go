@@ -19,6 +19,9 @@ type fakeVerifier struct{}
 
 func (fakeVerifier) Verify(_ context.Context, token string, cfg config.Config) (auth.Owner, config.RepositoryPolicy, error) {
 	policy := cfg.Repositories[0]
+	if token == "run-one-attempt-two" {
+		return auth.Owner{RepositoryID: policy.RepositoryID, RunID: "run-one", RunAttempt: "2"}, policy, nil
+	}
 	if token != "run-one" && token != "run-two" {
 		return auth.Owner{}, policy, auth.ErrUnauthorized
 	}
@@ -47,12 +50,12 @@ func newFakeBackend() *fakeBackend {
 
 func (b *fakeBackend) Ping(context.Context) error { return nil }
 
-func (b *fakeBackend) CountVMs(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner) (int, error) {
+func (b *fakeBackend) CountVMs(_ context.Context, policy config.RepositoryPolicy) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	count := 0
 	for _, record := range b.vms {
-		if record.owner == owner {
+		if record.owner.RepositoryID == policy.RepositoryID {
 			count++
 		}
 	}
@@ -107,12 +110,12 @@ func (*fakeBackend) RebootVM(context.Context, config.RepositoryPolicy, auth.Owne
 	return nil
 }
 
-func (b *fakeBackend) CountVolumes(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner) (int, error) {
+func (b *fakeBackend) CountVolumes(_ context.Context, policy config.RepositoryPolicy) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	count := 0
 	for _, record := range b.volumes {
-		if record.owner == owner {
+		if record.owner.RepositoryID == policy.RepositoryID {
 			count++
 		}
 	}
@@ -199,11 +202,12 @@ func TestConcurrentCreatesRespectActiveVMQuota(t *testing.T) {
 	s := testServer(2, 4)
 	var wg sync.WaitGroup
 	results := make(chan int, 20)
+	tokens := []string{"run-one", "run-two", "run-one-attempt-two"}
 	for i := range 20 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := doRequest(s, http.MethodPost, "/v1/vms", "run-one", fmt.Sprintf("vm-%d", i), vmRequest())
+			w := doRequest(s, http.MethodPost, "/v1/vms", tokens[i%len(tokens)], fmt.Sprintf("vm-%d", i), vmRequest())
 			results <- w.Code
 		}()
 	}
@@ -302,5 +306,57 @@ func TestQuotaAndCreateUseCountsWithoutStatusLists(t *testing.T) {
 	}
 	if usage["activeVMs"] != 1 || usage["activeVolumes"] != 1 {
 		t.Fatalf("unexpected quota: %#v", usage)
+	}
+}
+
+func TestQuotaSharedAcrossRunsAndAttempts(t *testing.T) {
+	s := testServer(1, 1)
+	created := doRequest(s, http.MethodPost, "/v1/vms", "run-one", "vm", vmRequest())
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create VM: %d %s", created.Code, created.Body.String())
+	}
+	var vm VMStatus
+	if err := json.Unmarshal(created.Body.Bytes(), &vm); err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"run-two", "run-one-attempt-two"} {
+		quota := doRequest(s, http.MethodGet, "/v1/quota", token, "", nil)
+		if quota.Code != http.StatusOK {
+			t.Fatalf("quota for %s: %d", token, quota.Code)
+		}
+		var usage map[string]int
+		if err := json.Unmarshal(quota.Body.Bytes(), &usage); err != nil {
+			t.Fatal(err)
+		}
+		if usage["activeVMs"] != 1 {
+			t.Fatalf("VM quota for %s: %#v", token, usage)
+		}
+		if got := doRequest(s, http.MethodPost, "/v1/vms", token, "another", vmRequest()); got.Code != http.StatusConflict {
+			t.Fatalf("VM create for %s: %d %s", token, got.Code, got.Body.String())
+		}
+		if got := doRequest(s, http.MethodGet, "/v1/vms/"+vm.ID, token, "", nil); got.Code != http.StatusNotFound {
+			t.Fatalf("cross-attempt VM read for %s: %d", token, got.Code)
+		}
+	}
+	volume := doRequest(s, http.MethodPost, "/v1/volumes", "run-two", "volume", VolumeRequest{Size: "1Gi"})
+	if volume.Code != http.StatusCreated {
+		t.Fatalf("create volume: %d %s", volume.Code, volume.Body.String())
+	}
+	if got := doRequest(s, http.MethodPost, "/v1/volumes", "run-one", "another-volume", VolumeRequest{Size: "1Gi"}); got.Code != http.StatusConflict {
+		t.Fatalf("volume create across runs: %d %s", got.Code, got.Body.String())
+	}
+	quota := doRequest(s, http.MethodGet, "/v1/quota", "run-one-attempt-two", "", nil)
+	var usage map[string]int
+	if err := json.Unmarshal(quota.Body.Bytes(), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage["activeVMs"] != 1 || usage["activeVolumes"] != 1 {
+		t.Fatalf("repository quota: %#v", usage)
+	}
+	if got := doRequest(s, http.MethodDelete, "/v1/vms/"+vm.ID, "run-one", "", nil); got.Code != http.StatusNoContent {
+		t.Fatalf("delete VM: %d", got.Code)
+	}
+	if got := doRequest(s, http.MethodPost, "/v1/vms", "run-two", "another", vmRequest()); got.Code != http.StatusCreated {
+		t.Fatalf("VM quota after delete: %d %s", got.Code, got.Body.String())
 	}
 }

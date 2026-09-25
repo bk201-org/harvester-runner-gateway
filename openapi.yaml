@@ -23,7 +23,7 @@ paths:
     get:
       responses:
         "200":
-          description: Active resources and limits for this workflow run attempt
+          description: Active resources and limits for this repository across all runs and attempts
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Quota"}

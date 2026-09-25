@@ -70,7 +70,8 @@ The gateway verifies the token's issuer, signature, audience, time claims,
 repository ID, `self-hosted` runner environment, workflow ref, and event name.
 Workflow refs and event names match exactly; no wildcard policy is supported.
 Only GitHub.com is the default issuer. Jobs in the same repository/run ID/run
-attempt share resources and quota. OIDC does not identify an exact runner VM.
+attempt share resources. All runs and attempts of a repository share its quota.
+OIDC does not identify an exact runner VM.
 
 See [examples/workflow.yml](examples/workflow.yml) for token retrieval and a
 create/status/delete sequence. Keep the token out of logs and artifacts.
@@ -110,8 +111,8 @@ deleting objects count until their Kubernetes objects disappear. A 409 response
 with code `quota_exceeded` indicates that a limit is reached. Policy also caps
 CPU, memory, boot disk size, and individual volume size; those size caps are
 separate from the N/M quota structure so quota dimensions can grow later.
-N/M limits apply per workflow run attempt. Use a Kubernetes ResourceQuota in the
-namespace if you also need a cap across all simultaneous runs.
+N/M limits apply per repository across all its workflow runs and attempts.
+Use a Kubernetes ResourceQuota for a cluster-enforced namespace-wide cap.
 
 Resources expire after six hours by default, or after the requested TTL up to
 24 hours. A reconciler checks every minute, deleting expired VMs, boot disks,
