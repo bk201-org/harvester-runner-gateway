@@ -30,6 +30,38 @@ support ReadWriteMany block PVCs for live hotplug. Bind these rights only in the
 configured namespaces and for the configured image/network namespaces where
 possible. The TLS certificate must match the hostname used by workflows.
 
+### Generate the TLS certificate and key
+
+`tls.certFile` and `tls.keyFile` are paths to a PEM-encoded server certificate
+and its matching, unencrypted private key. The gateway does not create them.
+For production, obtain a certificate for the gateway hostname from a CA trusted
+by the runners, and put the certificate and key in a protected location outside
+this repository.
+
+For a local test, replace the hostname and directory below, then run this on
+the gateway host (OpenSSL 1.1.1 or newer):
+
+```sh
+GATEWAY_HOST=gateway.example.com
+TLS_DIR=/secure/path/gateway-tls
+mkdir -p "$TLS_DIR"
+chmod 700 "$TLS_DIR"
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 30 \
+  -keyout "$TLS_DIR/tls.key" -out "$TLS_DIR/tls.crt" \
+  -subj "/CN=$GATEWAY_HOST" \
+  -addext "subjectAltName=DNS:$GATEWAY_HOST"
+chmod 600 "$TLS_DIR/tls.key"
+openssl x509 -in "$TLS_DIR/tls.crt" -noout -dates -ext subjectAltName
+```
+
+Set `tls.certFile` to the resulting `tls.crt` path and `tls.keyFile` to the
+`tls.key` path, or mount both at the example `/run/secrets/gateway/` paths.
+The service user must be able to read them. For an IP address, use
+`subjectAltName=IP:<address>` instead of `DNS:<hostname>`. The local test
+certificate is self-signed, so each runner must trust it before its HTTPS
+client can call the gateway. Do not commit the private key or disable TLS
+verification.
+
 ## Authentication
 
 Each API call uses `Authorization: Bearer <GitHub OIDC JWT>`. Workflow jobs grant
