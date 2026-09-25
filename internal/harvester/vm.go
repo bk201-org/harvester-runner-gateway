@@ -91,7 +91,7 @@ func (b *Backend) vmStatus(ctx context.Context, namespace string, vm *unstructur
 			continue
 		}
 		name, _ := pvc["claimName"].(string)
-		if strings.HasPrefix(name, "rgw-") && name != vm.GetName()+"-root" {
+		if validID(name) && name != vm.GetName()+"-root" {
 			status.AttachedVolumeIDs = append(status.AttachedVolumeIDs, name)
 		}
 	}

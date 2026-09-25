@@ -198,16 +198,18 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 	id, digest := resourceIdentity(owner, "vm", key, req)
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	if existing, err := s.backend.GetVM(r.Context(), policy, owner, id); err == nil {
-		if existing.RequestHash != digest {
-			writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
+	for _, candidate := range []string{id, legacyResourceID(owner, "vm", key)} {
+		if existing, err := s.backend.GetVM(r.Context(), policy, owner, candidate); err == nil {
+			if existing.RequestHash != digest {
+				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
+				return
+			}
+			writeJSON(w, http.StatusOK, existing)
+			return
+		} else if !errors.Is(err, ErrNotFound) {
+			backendError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, existing)
-		return
-	} else if !errors.Is(err, ErrNotFound) {
-		backendError(w, err)
-		return
 	}
 	count, err := s.backend.CountVMs(r.Context(), policy)
 	if err != nil {
@@ -301,16 +303,18 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 	id, digest := resourceIdentity(owner, "volume", key, req)
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	if existing, err := s.backend.GetVolume(r.Context(), policy, owner, id); err == nil {
-		if existing.RequestHash != digest {
-			writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
+	for _, candidate := range []string{id, legacyResourceID(owner, "volume", key)} {
+		if existing, err := s.backend.GetVolume(r.Context(), policy, owner, candidate); err == nil {
+			if existing.RequestHash != digest {
+				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
+				return
+			}
+			writeJSON(w, http.StatusOK, existing)
+			return
+		} else if !errors.Is(err, ErrNotFound) {
+			backendError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, existing)
-		return
-	} else if !errors.Is(err, ErrNotFound) {
-		backendError(w, err)
-		return
 	}
 	count, err := s.backend.CountVolumes(r.Context(), policy)
 	if err != nil {
@@ -414,9 +418,16 @@ func validQuantity(value, maximum string) bool {
 func resourceIdentity(owner auth.Owner, kind, key string, request any) (string, string) {
 	data, _ := json.Marshal(request)
 	digest := sha256.Sum256(data)
+	return resourceID(owner, kind, key, "hrgw-", 10), hex.EncodeToString(digest[:])
+}
+
+func legacyResourceID(owner auth.Owner, kind, key string) string {
+	return resourceID(owner, kind, key, "rgw-", 15)
+}
+
+func resourceID(owner auth.Owner, kind, key, prefix string, hashBytes int) string {
 	identity := sha256.Sum256([]byte(owner.RepositoryID + "/" + owner.RunID + "/" + owner.RunAttempt + "/" + kind + "/" + key))
-	id := "rgw-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(identity[:15]))
-	return id, hex.EncodeToString(digest[:])
+	return prefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(identity[:hashBytes]))
 }
 
 func idempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {

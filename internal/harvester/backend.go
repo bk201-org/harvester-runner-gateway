@@ -164,7 +164,7 @@ func expiry(values map[string]string) time.Time {
 }
 
 func validID(id string) bool {
-	return strings.HasPrefix(id, "rgw-") && len(validation.IsDNS1123Label(id)) == 0
+	return (strings.HasPrefix(id, "hrgw-") || strings.HasPrefix(id, "rgw-")) && len(validation.IsDNS1123Label(id)) == 0
 }
 
 func splitName(name string) (string, string) {

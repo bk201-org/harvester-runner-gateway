@@ -32,10 +32,13 @@ include an expiry time; VM and independent volume objects also carry a hash of
 the create request. The Kubernetes objects are the durable resource record. The
 gateway has no resource database, VM status cache, or Kubernetes informer.
 
-For a create request, the gateway derives a stable `rgw-` resource ID from the
-owner, resource kind, and `Idempotency-Key`. It hashes the request body separately.
-If that ID already exists with the same request hash, the API returns the
-existing resource. A different request with the same key returns a conflict.
+For a create request, the gateway derives a stable `hrgw-` resource ID from
+the owner, resource kind, and `Idempotency-Key`. The suffix is the unpadded
+lowercase base32 encoding of the first 10 bytes of the SHA-256 identity hash
+(16 characters, 80 bits). It hashes the request body separately. If that ID
+already exists with the same request hash, the API returns the existing resource.
+A different request with the same key returns a conflict. Legacy `rgw-` IDs
+remain readable, and retries with their original keys return those resources.
 
 ## How VM status is read
 
