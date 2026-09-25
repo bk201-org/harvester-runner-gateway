@@ -47,6 +47,18 @@ func newFakeBackend() *fakeBackend {
 
 func (b *fakeBackend) Ping(context.Context) error { return nil }
 
+func (b *fakeBackend) CountVMs(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	count := 0
+	for _, record := range b.vms {
+		if record.owner == owner {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (b *fakeBackend) ListVMs(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner) ([]VMStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -93,6 +105,18 @@ func (*fakeBackend) PowerVM(context.Context, config.RepositoryPolicy, auth.Owner
 }
 func (*fakeBackend) RebootVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error {
 	return nil
+}
+
+func (b *fakeBackend) CountVolumes(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	count := 0
+	for _, record := range b.volumes {
+		if record.owner == owner {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (b *fakeBackend) ListVolumes(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner) ([]VolumeStatus, error) {
@@ -241,6 +265,39 @@ func TestIdempotencyOwnershipAndQuotaRelease(t *testing.T) {
 	quota := doRequest(s, http.MethodGet, "/v1/quota", "run-one", "", nil)
 	var usage map[string]int
 	if err := json.Unmarshal(quota.Body.Bytes(), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage["activeVMs"] != 1 || usage["activeVolumes"] != 1 {
+		t.Fatalf("unexpected quota: %#v", usage)
+	}
+}
+
+// countOnlyBackend catches quota paths that accidentally build full status lists.
+type countOnlyBackend struct{ *fakeBackend }
+
+func (*countOnlyBackend) ListVMs(context.Context, config.RepositoryPolicy, auth.Owner) ([]VMStatus, error) {
+	panic("quota path called ListVMs")
+}
+
+func (*countOnlyBackend) ListVolumes(context.Context, config.RepositoryPolicy, auth.Owner) ([]VolumeStatus, error) {
+	panic("quota path called ListVolumes")
+}
+
+func TestQuotaAndCreateUseCountsWithoutStatusLists(t *testing.T) {
+	s := testServer(1, 1)
+	s.backend = &countOnlyBackend{s.backend.(*fakeBackend)}
+	if got := doRequest(s, http.MethodPost, "/v1/vms", "run-one", "vm", vmRequest()); got.Code != http.StatusCreated {
+		t.Fatalf("create VM: %d %s", got.Code, got.Body.String())
+	}
+	if got := doRequest(s, http.MethodPost, "/v1/volumes", "run-one", "volume", VolumeRequest{Size: "1Gi"}); got.Code != http.StatusCreated {
+		t.Fatalf("create volume: %d %s", got.Code, got.Body.String())
+	}
+	got := doRequest(s, http.MethodGet, "/v1/quota", "run-one", "", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("quota: %d %s", got.Code, got.Body.String())
+	}
+	var usage map[string]int
+	if err := json.Unmarshal(got.Body.Bytes(), &usage); err != nil {
 		t.Fatal(err)
 	}
 	if usage["activeVMs"] != 1 || usage["activeVolumes"] != 1 {

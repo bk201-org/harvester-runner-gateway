@@ -33,8 +33,20 @@ func (b *Backend) getOwnedVM(ctx context.Context, policy config.RepositoryPolicy
 	return vm, nil
 }
 
+func (b *Backend) listOwnedVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (*unstructured.UnstructuredList, error) {
+	return b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "vm")})
+}
+
+func (b *Backend) CountVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (int, error) {
+	list, err := b.listOwnedVMs(ctx, policy, owner)
+	if err != nil {
+		return 0, err
+	}
+	return len(list.Items), nil
+}
+
 func (b *Backend) ListVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) ([]gateway.VMStatus, error) {
-	list, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "vm")})
+	list, err := b.listOwnedVMs(ctx, policy, owner)
 	if err != nil {
 		return nil, err
 	}

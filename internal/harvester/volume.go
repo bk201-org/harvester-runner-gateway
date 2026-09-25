@@ -32,8 +32,20 @@ func (b *Backend) getOwnedVolume(ctx context.Context, policy config.RepositoryPo
 	return pvc, nil
 }
 
+func (b *Backend) listOwnedVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (*corev1.PersistentVolumeClaimList, error) {
+	return b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "volume")})
+}
+
+func (b *Backend) CountVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (int, error) {
+	list, err := b.listOwnedVolumes(ctx, policy, owner)
+	if err != nil {
+		return 0, err
+	}
+	return len(list.Items), nil
+}
+
 func (b *Backend) ListVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) ([]gateway.VolumeStatus, error) {
-	list, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "volume")})
+	list, err := b.listOwnedVolumes(ctx, policy, owner)
 	if err != nil {
 		return nil, err
 	}

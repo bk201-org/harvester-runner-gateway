@@ -64,7 +64,8 @@ address does not establish that SSH or a guest service is ready.
 ## Quota and lifecycle
 
 The gateway counts owner-labeled VMs and independent volume PVCs by listing
-cluster objects. Provisioning and deleting objects continue to count until
+cluster objects. Count queries do not fetch VMIs or resolve volume attachments;
+full status reads still do. Provisioning and deleting objects continue to count until
 they disappear. Each VM consumes one VM quota slot; its boot disk PVC is not
 counted separately. A process-local mutex serializes quota checks with creates, so
 the current design requires one gateway instance for reliable quota enforcement.

@@ -66,12 +66,14 @@ type VolumeStatus struct {
 
 type Backend interface {
 	Ping(context.Context) error
+	CountVMs(context.Context, config.RepositoryPolicy, auth.Owner) (int, error)
 	ListVMs(context.Context, config.RepositoryPolicy, auth.Owner) ([]VMStatus, error)
 	GetVM(context.Context, config.RepositoryPolicy, auth.Owner, string) (VMStatus, error)
 	CreateVM(context.Context, config.RepositoryPolicy, auth.Owner, string, VMRequest, time.Time, string) (VMStatus, error)
 	DeleteVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	PowerVM(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
 	RebootVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error
+	CountVolumes(context.Context, config.RepositoryPolicy, auth.Owner) (int, error)
 	ListVolumes(context.Context, config.RepositoryPolicy, auth.Owner) ([]VolumeStatus, error)
 	GetVolume(context.Context, config.RepositoryPolicy, auth.Owner, string) (VolumeStatus, error)
 	CreateVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, VolumeRequest, time.Time, string) (VolumeStatus, error)
@@ -146,19 +148,19 @@ func (s *Server) authorize(next action) http.HandlerFunc {
 }
 
 func (s *Server) quota(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	vms, err := s.backend.ListVMs(r.Context(), policy, owner)
+	vms, err := s.backend.CountVMs(r.Context(), policy, owner)
 	if err != nil {
 		backendError(w, err)
 		return
 	}
-	volumes, err := s.backend.ListVolumes(r.Context(), policy, owner)
+	volumes, err := s.backend.CountVolumes(r.Context(), policy, owner)
 	if err != nil {
 		backendError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{
-		"maxActiveVMs": policy.Quota.MaxActiveVMs, "activeVMs": len(vms),
-		"maxActiveVolumes": policy.Quota.MaxActiveVolumes, "activeVolumes": len(volumes),
+		"maxActiveVMs": policy.Quota.MaxActiveVMs, "activeVMs": vms,
+		"maxActiveVolumes": policy.Quota.MaxActiveVolumes, "activeVolumes": volumes,
 	})
 }
 
@@ -207,12 +209,12 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		backendError(w, err)
 		return
 	}
-	items, err := s.backend.ListVMs(r.Context(), policy, owner)
+	count, err := s.backend.CountVMs(r.Context(), policy, owner)
 	if err != nil {
 		backendError(w, err)
 		return
 	}
-	if len(items) >= policy.Quota.MaxActiveVMs {
+	if count >= policy.Quota.MaxActiveVMs {
 		writeError(w, http.StatusConflict, "quota_exceeded", "active VM quota reached")
 		return
 	}
@@ -310,12 +312,12 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		backendError(w, err)
 		return
 	}
-	items, err := s.backend.ListVolumes(r.Context(), policy, owner)
+	count, err := s.backend.CountVolumes(r.Context(), policy, owner)
 	if err != nil {
 		backendError(w, err)
 		return
 	}
-	if len(items) >= policy.Quota.MaxActiveVolumes {
+	if count >= policy.Quota.MaxActiveVolumes {
 		writeError(w, http.StatusConflict, "quota_exceeded", "active volume quota reached")
 		return
 	}
