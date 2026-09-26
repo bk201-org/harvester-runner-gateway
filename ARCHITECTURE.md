@@ -56,8 +56,12 @@ remain readable, and retries with their original keys return those resources.
    attached independent volume IDs from the VM specification and expiry from
    the VM annotation.
 4. It gets the matching VirtualMachineInstance (VMI) from the Kubernetes API.
-   An existing VMI yields `powerState: "on"` and any reported interface IP
-   addresses. A missing VMI yields `powerState: "off"` and an empty IP list.
+   An existing VMI yields `powerState: "on"`. The gateway collects valid,
+   usable IPv4 and IPv6 addresses reported for `nic-1` from both VMI IP fields,
+   removes duplicates and link-local/loopback/unspecified/multicast addresses,
+   and sorts the result. A missing VMI yields `powerState: "off"` and an empty
+   IP list. `ready` is true only when the VMI phase is `Running` and that list is
+   nonempty.
 
 `GET /v1/vms` lists owner-labeled VM objects from the cluster and builds the
 same status for each one, including a VMI lookup. `GET /v1/volumes/{id}` reads
@@ -66,7 +70,12 @@ return an in-memory snapshot. If a cluster read fails for a reason other than
 an absent object, the API returns a cluster error instead of stale status.
 Status reflects what the Kubernetes API reports at read time; provisioning and
 guest network reporting can still lag behind a create or power action. An IP
-address does not establish that SSH or a guest service is ready.
+address does not establish that cloud-init, SSH, or a guest service is ready.
+For the Multus bridge network, reliable IP reporting requires QEMU Guest Agent
+in the approved image.
+
+The HTTP create API remains asynchronous. The bundled CLI polls VM status every
+three seconds by default and returns when `ready` becomes true.
 
 ## Quota and lifecycle
 

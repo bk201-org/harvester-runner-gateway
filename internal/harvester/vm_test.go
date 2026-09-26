@@ -3,6 +3,7 @@ package harvester
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -102,5 +103,79 @@ func TestVMStatusListsCurrentAndLegacyVolumes(t *testing.T) {
 	}
 	if len(status.AttachedVolumeIDs) != 2 || status.AttachedVolumeIDs[0] != "hrgw-new-volume" || status.AttachedVolumeIDs[1] != "rgw-old-volume" {
 		t.Fatalf("attached volumes = %v", status.AttachedVolumeIDs)
+	}
+	if status.Ready || len(status.IPAddresses) != 0 || status.PowerState != "off" {
+		t.Fatalf("missing VMI status = %+v", status)
+	}
+}
+
+func TestVMStatusReadinessRequiresRunningVMIWithUsableNICAddress(t *testing.T) {
+	tests := []struct {
+		name       string
+		phase      string
+		interfaces []any
+		wantReady  bool
+		wantIPs    []string
+	}{
+		{
+			name:  "running with normalized IPv4 and IPv6",
+			phase: "Running",
+			interfaces: []any{
+				map[string]any{"name": "other", "ipAddress": "10.0.0.99"},
+				map[string]any{"name": "nic-1", "ipAddress": "10.0.0.10", "ipAddresses": []any{
+					"fe80::1", "2001:db8::10", "10.0.0.10", "bad-address", "127.0.0.1", "224.0.0.1",
+				}},
+			},
+			wantReady: true,
+			wantIPs:   []string{"10.0.0.10", "2001:db8::10"},
+		},
+		{
+			name:       "non-running VMI retains usable IP but is not ready",
+			phase:      "Pending",
+			interfaces: []any{map[string]any{"name": "nic-1", "ipAddress": "10.0.0.10"}},
+			wantIPs:    []string{"10.0.0.10"},
+		},
+		{
+			name:       "running without an IP",
+			phase:      "Running",
+			interfaces: []any{map[string]any{"name": "nic-1"}},
+			wantIPs:    []string{},
+		},
+		{
+			name:  "running with only unusable addresses",
+			phase: "Running",
+			interfaces: []any{map[string]any{"name": "nic-1", "ipAddresses": []any{
+				"", "not-an-ip", "0.0.0.0", "::", "169.254.1.1", "fe80::1", "::1", "ff02::1",
+			}}},
+			wantIPs: []string{},
+		},
+		{
+			name:       "running with an IP only on another interface",
+			phase:      "Running",
+			interfaces: []any{map[string]any{"name": "other", "ipAddress": "10.0.0.10"}},
+			wantIPs:    []string{},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vm := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
+				"metadata": map[string]any{"name": "hrgw-example", "namespace": "ci"},
+				"status":   map[string]any{"printableStatus": "Running"},
+			}}
+			vmi := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachineInstance",
+				"metadata": map[string]any{"name": "hrgw-example", "namespace": "ci"},
+				"status":   map[string]any{"phase": test.phase, "interfaces": test.interfaces},
+			}}
+			backend := &Backend{dynamic: fake.NewSimpleDynamicClient(runtime.NewScheme(), vmi)}
+			status, err := backend.vmStatus(context.Background(), "ci", vm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Ready != test.wantReady || !reflect.DeepEqual(status.IPAddresses, test.wantIPs) {
+				t.Fatalf("ready=%v IPs=%v, want ready=%v IPs=%v", status.Ready, status.IPAddresses, test.wantReady, test.wantIPs)
+			}
+		})
 	}
 }

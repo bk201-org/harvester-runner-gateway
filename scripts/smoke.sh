@@ -92,12 +92,14 @@ wait_for() {
   return 1
 }
 
-vm_id=$("$GATEWAY_CLIENT" vm create \
+vm_status=$("$GATEWAY_CLIENT" vm create \
   --image "$GATEWAY_IMAGE" --network "$GATEWAY_NETWORK" \
   --cpu 2 --memory "$GATEWAY_MEMORY" --boot-disk-size "$GATEWAY_BOOT_DISK" \
-  --ttl-seconds 3600 --idempotency-key "$attempt-vm" | jq -er .id)
+  --ttl-seconds 3600 --idempotency-key "$attempt-vm")
+vm_id=$(jq -er \
+  'select(.ready == true and (.ipAddresses | type == "array" and length > 0)) | .id' \
+  <<<"$vm_status")
 echo "Created VM $vm_id"
-wait_for vm "$vm_id" .phase Running
 
 volume_id=$("$GATEWAY_CLIENT" volume create \
   --size "$GATEWAY_VOLUME_SIZE" --ttl-seconds 3600 \

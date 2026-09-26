@@ -53,6 +53,14 @@ type VMRequest struct {
 	UserData      string   `json:"userData,omitempty"`
 	TTLSeconds    *int     `json:"ttlSeconds,omitempty"`
 }
+
+type VMStatus struct {
+	ID          string   `json:"id"`
+	Phase       string   `json:"phase"`
+	Ready       bool     `json:"ready"`
+	IPAddresses []string `json:"ipAddresses"`
+}
+
 type VolumeRequest struct {
 	Size       string `json:"size"`
 	TTLSeconds *int   `json:"ttlSeconds,omitempty"`

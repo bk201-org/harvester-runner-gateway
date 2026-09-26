@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
+
+const primaryInterfaceName = "nic-1"
 
 func (b *Backend) getOwnedVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string) (*unstructured.Unstructured, error) {
 	if !validID(id) {
@@ -101,20 +105,53 @@ func (b *Backend) vmStatus(ctx context.Context, namespace string, vm *unstructur
 	}
 	if err == nil {
 		status.PowerState = "on"
-		ifaces, _, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces")
-		seen := map[string]bool{}
-		for _, raw := range ifaces {
-			iface, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if ip, ok := iface["ipAddress"].(string); ok && ip != "" && !seen[ip] {
-				status.IPAddresses = append(status.IPAddresses, ip)
-				seen[ip] = true
-			}
-		}
+		status.IPAddresses = usableInterfaceIPs(vmi, primaryInterfaceName)
+		status.Ready = nestedString(vmi, "status", "phase") == "Running" && len(status.IPAddresses) > 0
 	}
 	return status, nil
+}
+
+func usableInterfaceIPs(vmi *unstructured.Unstructured, interfaceName string) []string {
+	ifaces, _, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces")
+	seen := map[string]struct{}{}
+	for _, raw := range ifaces {
+		iface, ok := raw.(map[string]any)
+		if !ok || iface["name"] != interfaceName {
+			continue
+		}
+		candidates := []string{}
+		if primary, ok := iface["ipAddress"].(string); ok {
+			candidates = append(candidates, primary)
+		}
+		switch addresses := iface["ipAddresses"].(type) {
+		case []any:
+			for _, rawAddress := range addresses {
+				if address, ok := rawAddress.(string); ok {
+					candidates = append(candidates, address)
+				}
+			}
+		case []string:
+			candidates = append(candidates, addresses...)
+		}
+		for _, candidate := range candidates {
+			address, err := netip.ParseAddr(strings.TrimSpace(candidate))
+			if err != nil {
+				continue
+			}
+			address = address.Unmap()
+			if !address.IsGlobalUnicast() || address.IsUnspecified() || address.IsLoopback() ||
+				address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsMulticast() {
+				continue
+			}
+			seen[address.String()] = struct{}{}
+		}
+	}
+	addresses := make([]string, 0, len(seen))
+	for address := range seen {
+		addresses = append(addresses, address)
+	}
+	sort.Strings(addresses)
+	return addresses
 }
 
 func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VMRequest, expires time.Time, hash string) (gateway.VMStatus, error) {
@@ -220,8 +257,8 @@ func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, l
 					"devices": map[string]any{"disks": []any{
 						map[string]any{"name": "rootdisk", "bootOrder": int64(1), "disk": map[string]any{"bus": "virtio"}},
 						map[string]any{"name": "cloudinitdisk", "disk": map[string]any{"bus": "virtio"}}},
-						"interfaces": []any{map[string]any{"name": "nic-1", "model": "virtio", "bridge": map[string]any{}}}}},
-				"networks": []any{map[string]any{"name": "nic-1", "multus": map[string]any{"networkName": networkRef}}},
+						"interfaces": []any{map[string]any{"name": primaryInterfaceName, "model": "virtio", "bridge": map[string]any{}}}}},
+				"networks": []any{map[string]any{"name": primaryInterfaceName, "multus": map[string]any{"networkName": networkRef}}},
 				"volumes": []any{
 					map[string]any{"name": "rootdisk", "persistentVolumeClaim": map[string]any{"claimName": rootName}},
 					map[string]any{"name": "cloudinitdisk", "cloudInitNoCloud": map[string]any{"secretRef": map[string]any{"name": id + "-init"}}}},

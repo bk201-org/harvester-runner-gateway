@@ -215,11 +215,12 @@ components:
         ttlSeconds: {type: integer, minimum: 1, maximum: 86400, default: 21600}
     VMStatus:
       type: object
-      required: [id, phase, powerState, ipAddresses, attachedVolumeIDs, expiresAt]
+      required: [id, phase, powerState, ready, ipAddresses, attachedVolumeIDs, expiresAt]
       properties:
         id: {type: string}
         phase: {type: string}
         powerState: {type: string, enum: ["on", "off"]}
+        ready: {type: boolean, description: VMI is Running and nic-1 has a usable IP address}
         ipAddresses:
           type: array
           items: {type: string}

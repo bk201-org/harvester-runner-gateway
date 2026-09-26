@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bk201-org/harvester-runner-gateway/internal/client"
 )
 
 func writeTestFile(t *testing.T, name string, data []byte) string {
@@ -67,6 +71,10 @@ func TestEveryOperation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args[:min(2, len(tc.args))], " ")+fmt.Sprint(tc.status), func(t *testing.T) {
+			response := `{"id":"resource"}`
+			if tc.args[0] == "vm" && tc.args[1] == "create" {
+				response = `{"id":"resource","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`
+			}
 			calls := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
@@ -98,7 +106,7 @@ func TestEveryOperation(t *testing.T) {
 				}
 				w.WriteHeader(tc.status)
 				if tc.status == 200 || tc.status == 201 {
-					fmt.Fprint(w, `{"id":"resource"}`)
+					fmt.Fprint(w, response)
 				}
 			}))
 			defer server.Close()
@@ -109,7 +117,7 @@ func TestEveryOperation(t *testing.T) {
 			}
 			expectedOut := ""
 			if tc.status == 200 || tc.status == 201 {
-				expectedOut = "{\"id\":\"resource\"}\n"
+				expectedOut = response + "\n"
 			}
 			if out != expectedOut {
 				t.Errorf("stdout=%q", out)
@@ -185,6 +193,157 @@ func TestFlagPrecedenceAndExitCodes(t *testing.T) {
 	code, _, _ = invoke([]string{"quota"}, map[string]string{"GATEWAY_URL": server.URL})
 	if code != 1 {
 		t.Errorf("missing authentication: exit %d", code)
+	}
+}
+
+func newReadinessTestClient(t *testing.T, server *httptest.Server) *client.Client {
+	t.Helper()
+	api, err := client.New(client.Config{
+		URL: server.URL, CACert: testCA(t, server), Token: "secret", Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(api.Close)
+	return api
+}
+
+func TestWaitForVMReadyPollsUntilReady(t *testing.T) {
+	calls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/vms/hrgw-example" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		if calls == 1 {
+			fmt.Fprint(w, `{"id":"hrgw-example","phase":"Running","ready":false,"ipAddresses":[]}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"hrgw-example","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`)
+	}))
+	defer server.Close()
+
+	initial := []byte(`{"id":"hrgw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
+	data, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status client.VMStatus
+	if json.Unmarshal(data, &status) != nil || !status.Ready || len(status.IPAddresses) != 1 || calls != 2 {
+		t.Fatalf("status=%+v calls=%d", status, calls)
+	}
+}
+
+func TestWaitForVMReadyFailuresKeepVM(t *testing.T) {
+	initial := []byte(`{"id":"hrgw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
+	t.Run("timeout", func(t *testing.T) {
+		var getCalls, deleteCalls int
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				getCalls++
+				fmt.Fprint(w, `{"id":"hrgw-example","phase":"Starting","ready":false,"ipAddresses":[]}`)
+			case http.MethodDelete:
+				deleteCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}
+		}))
+		defer server.Close()
+		_, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, 10*time.Millisecond, time.Millisecond)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "hrgw-example") ||
+			!strings.Contains(err.Error(), "last phase=Starting") || !strings.Contains(err.Error(), "remains allocated") {
+			t.Fatalf("unexpected timeout error: %v", err)
+		}
+		if getCalls == 0 || deleteCalls != 0 {
+			t.Fatalf("GET calls=%d DELETE calls=%d", getCalls, deleteCalls)
+		}
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("canceled wait made a request")
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := waitForVMReady(ctx, newReadinessTestClient(t, server), initial, time.Minute, time.Hour)
+		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "hrgw-example") || !strings.Contains(err.Error(), "remains allocated") {
+			t.Fatalf("unexpected cancellation error: %v", err)
+		}
+	})
+
+	t.Run("polling error", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		defer server.Close()
+		_, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, time.Second, time.Millisecond)
+		if err == nil || !strings.Contains(err.Error(), "hrgw-example") || !strings.Contains(err.Error(), "last phase=Provisioning") {
+			t.Fatalf("unexpected polling error: %v", err)
+		}
+	})
+}
+
+func TestVMCreateWaitOptions(t *testing.T) {
+	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "key"}
+	tests := []struct {
+		name        string
+		args        []string
+		defaultWait string
+		wantWait    bool
+		wantTimeout time.Duration
+		wantError   bool
+	}{
+		{name: "environment default", args: base, defaultWait: "7m", wantWait: true, wantTimeout: 7 * time.Minute},
+		{name: "flag overrides environment", args: append(append([]string{}, base...), "--wait-timeout", "9m"), defaultWait: "7m", wantWait: true, wantTimeout: 9 * time.Minute},
+		{name: "no wait", args: append(append([]string{}, base...), "--no-wait"), defaultWait: "7m", wantTimeout: 7 * time.Minute},
+		{name: "invalid environment", args: base, defaultWait: "invalid", wantError: true},
+		{name: "invalid flag", args: append(append([]string{}, base...), "--wait-timeout", "0s"), defaultWait: "7m", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			op, err := parseCommand(test.args, io.Discard, test.defaultWait)
+			if (err != nil) != test.wantError {
+				t.Fatalf("error=%v", err)
+			}
+			if err == nil && (op.waitForVM != test.wantWait || op.waitTimeout != test.wantTimeout) {
+				t.Fatalf("wait=%v timeout=%s", op.waitForVM, op.waitTimeout)
+			}
+		})
+	}
+}
+
+func TestVMCreateNoWaitAndIdempotentReady(t *testing.T) {
+	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "key"}
+	tests := []struct {
+		name     string
+		args     []string
+		status   int
+		response string
+	}{
+		{name: "no wait", args: append(append([]string{}, base...), "--no-wait"), status: http.StatusCreated,
+			response: `{"id":"hrgw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`},
+		{name: "idempotent ready", args: base, status: http.StatusOK,
+			response: `{"id":"hrgw-example","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodPost {
+					t.Errorf("unexpected polling request: %s", r.Method)
+				}
+				w.WriteHeader(test.status)
+				fmt.Fprint(w, test.response)
+			}))
+			defer server.Close()
+			env := map[string]string{"GATEWAY_URL": server.URL, "GATEWAY_CA_CERT": testCA(t, server), "GATEWAY_TOKEN": "secret"}
+			code, out, stderr := invoke(test.args, env)
+			if code != 0 || stderr != "" || out != test.response+"\n" || calls != 1 {
+				t.Fatalf("code=%d stdout=%q stderr=%q calls=%d", code, out, stderr, calls)
+			}
+		})
 	}
 }
 

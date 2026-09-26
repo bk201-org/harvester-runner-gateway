@@ -48,6 +48,7 @@ type VMStatus struct {
 	ID                string    `json:"id"`
 	Phase             string    `json:"phase"`
 	PowerState        string    `json:"powerState"`
+	Ready             bool      `json:"ready"`
 	IPAddresses       []string  `json:"ipAddresses"`
 	AttachedVolumeIDs []string  `json:"attachedVolumeIDs"`
 	Message           string    `json:"message,omitempty"`

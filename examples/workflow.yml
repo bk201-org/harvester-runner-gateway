@@ -27,6 +27,7 @@ jobs:
             --image default/ubuntu-24-04 --network default/vm-network \
             --cpu 2 --memory 4Gi --boot-disk-size 20Gi \
             --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm")
-          vm_id=$(printf '%s' "$vm" | jq -er .id)
+          vm_id=$(printf '%s' "$vm" | \
+            jq -er 'select(.ready == true and (.ipAddresses | length > 0)) | .id')
           trap '"$client" vm delete "$vm_id" || true' EXIT
           "$client" vm get "$vm_id" | jq .

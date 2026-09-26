@@ -4,6 +4,7 @@ package clientcli
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,6 +17,15 @@ import (
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/client"
 )
+
+const defaultVMWaitTimeout = 5 * time.Minute
+const vmPollInterval = 3 * time.Second
+
+type command struct {
+	client.Request
+	waitForVM   bool
+	waitTimeout time.Duration
+}
 
 const rootHelp = `Usage: harvester-runner-gateway-client [global flags] COMMAND
 
@@ -63,6 +73,10 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	if timeout == "" {
 		timeout = "30s"
 	}
+	vmWaitTimeout := getenv("GATEWAY_VM_WAIT_TIMEOUT")
+	if vmWaitTimeout == "" {
+		vmWaitTimeout = defaultVMWaitTimeout.String()
+	}
 	fs := flagSet("harvester-runner-gateway-client", stderr, rootHelp)
 	fs.StringVar(&cfg.URL, "url", cfg.URL, "gateway HTTPS URL (GATEWAY_URL)")
 	fs.StringVar(&cfg.TokenFile, "token-file", cfg.TokenFile, "bearer token file (GATEWAY_TOKEN_FILE)")
@@ -88,7 +102,7 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	} else {
 		args = fs.Args()
 	}
-	operation, err := parseCommand(args, stderr)
+	operation, err := parseCommand(args, stderr, vmWaitTimeout)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -105,7 +119,10 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	if err == nil {
 		defer api.Close()
 		var data []byte
-		data, err = api.Do(ctx, operation)
+		data, err = api.Do(ctx, operation.Request)
+		if err == nil && operation.waitForVM {
+			data, err = waitForVMReady(ctx, api, data, operation.waitTimeout, vmPollInterval)
+		}
 		if err == nil && len(data) > 0 {
 			_, err = fmt.Fprintln(stdout, strings.TrimSpace(string(data)))
 		}
@@ -123,8 +140,8 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 
 var resourceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-func parseCommand(args []string, output io.Writer) (client.Request, error) {
-	op := client.Request{Method: "GET", Auth: true, Statuses: []int{200}}
+func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (command, error) {
+	op := command{Request: client.Request{Method: "GET", Auth: true, Statuses: []int{200}}}
 	command := args[0]
 	rest := args[1:]
 	switch command {
@@ -160,7 +177,7 @@ func parseCommand(args []string, output io.Writer) (client.Request, error) {
 	plural := command + "s"
 	op.Path = []string{"v1", plural}
 	if action == "create" {
-		return parseCreate(command, rest, output)
+		return parseCreate(command, rest, output, vmWaitTimeout)
 	}
 	expected := 0
 	switch action {
@@ -258,15 +275,16 @@ func positiveQuantity(value string) bool {
 	return ok && number.Sign() > 0
 }
 
-func parseCreate(kind string, args []string, output io.Writer) (client.Request, error) {
-	op := client.Request{Method: "POST", Path: []string{"v1", kind + "s"}, Auth: true, Statuses: []int{200, 201}}
-	fs := flagSet(kind+" create", output, "Usage: harvester-runner-gateway-client [global flags] "+kind+" create [flags]\nAll size quantities use Kubernetes notation, e.g. 4Gi. Creation returns before provisioning completes.")
+func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeout string) (command, error) {
+	op := command{Request: client.Request{Method: "POST", Path: []string{"v1", kind + "s"}, Auth: true, Statuses: []int{200, 201}}}
+	fs := flagSet(kind+" create", output, "Usage: harvester-runner-gateway-client [global flags] "+kind+" create [flags]\nAll size quantities use Kubernetes notation, e.g. 4Gi. VM creation waits for a running VMI with a usable IP unless --no-wait is set.")
 	fs.StringVar(&op.IdempotencyKey, "idempotency-key", "", "required: stable key for repeating this request (1-128 printable non-space ASCII characters)")
 	ttl := fs.Int("ttl-seconds", 0, "resource lifetime, 1-86400 seconds (omitted: server default)")
 	var vm client.VMRequest
 	var volume client.VolumeRequest
 	var keys stringList
-	var userDataFile string
+	var userDataFile, waitTimeout string
+	var noWait bool
 	if kind == "vm" {
 		fs.StringVar(&vm.Image, "image", "", "required: approved namespace/name image")
 		fs.StringVar(&vm.Network, "network", "", "required: approved namespace/name network")
@@ -275,6 +293,8 @@ func parseCreate(kind string, args []string, output io.Writer) (client.Request, 
 		fs.StringVar(&vm.BootDiskSize, "boot-disk-size", "", "required: boot disk quantity")
 		fs.Var(&keys, "ssh-public-key-file", "SSH public key file; repeat for multiple keys (maximum 10)")
 		fs.StringVar(&userDataFile, "user-data-file", "", "cloud-config file (maximum 64 KiB)")
+		fs.StringVar(&waitTimeout, "wait-timeout", defaultWaitTimeout, "time to wait for VM readiness (GATEWAY_VM_WAIT_TIMEOUT)")
+		fs.BoolVar(&noWait, "no-wait", false, "return after VM creation without waiting for readiness")
 	} else {
 		fs.StringVar(&volume.Size, "size", "", "required: volume size quantity")
 	}
@@ -312,6 +332,12 @@ func parseCreate(kind string, args []string, output io.Writer) (client.Request, 
 		op.Body = volume
 		return op, nil
 	}
+	duration, err := time.ParseDuration(waitTimeout)
+	if err != nil || duration <= 0 {
+		return op, errors.New("--wait-timeout must be a positive duration, such as 5m")
+	}
+	op.waitForVM = !noWait
+	op.waitTimeout = duration
 	for _, item := range []struct{ name, value string }{{"image", vm.Image}, {"network", vm.Network}} {
 		parts := strings.Split(item.value, "/")
 		if len(parts) != 2 || !resourceID.MatchString(parts[0]) || !resourceID.MatchString(parts[1]) {
@@ -354,6 +380,64 @@ func parseCreate(kind string, args []string, output io.Writer) (client.Request, 
 	}
 	op.Body = vm
 	return op, nil
+}
+
+func waitForVMReady(parent context.Context, api *client.Client, initial []byte, timeout, interval time.Duration) ([]byte, error) {
+	status, err := decodeVMStatus(initial)
+	if err != nil {
+		return nil, err
+	}
+	if status.Ready {
+		return initial, nil
+	}
+	waitCtx, cancel := context.WithTimeout(parent, timeout)
+	id := status.ID
+	defer cancel()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return nil, vmWaitError(status, timeout, waitCtx.Err())
+		case <-ticker.C:
+			data, requestErr := api.Do(waitCtx, client.Request{
+				Method: "GET", Path: []string{"v1", "vms", id}, Auth: true, Statuses: []int{200},
+			})
+			if requestErr != nil {
+				if waitCtx.Err() != nil {
+					return nil, vmWaitError(status, timeout, waitCtx.Err())
+				}
+				return nil, fmt.Errorf("wait for VM %s readiness (last phase=%s, IP addresses=%v): %w", status.ID, status.Phase, status.IPAddresses, requestErr)
+			}
+			status, err = decodeVMStatus(data)
+			if err != nil {
+				return nil, err
+			}
+			if status.ID != id {
+				return nil, errors.New("gateway returned VM status for a different resource")
+			}
+			if status.Ready {
+				return data, nil
+			}
+		}
+	}
+}
+
+func decodeVMStatus(data []byte) (client.VMStatus, error) {
+	var status client.VMStatus
+	if err := json.Unmarshal(data, &status); err != nil || !resourceID.MatchString(status.ID) {
+		return client.VMStatus{}, errors.New("gateway returned an invalid VM status")
+	}
+	return status, nil
+}
+
+func vmWaitError(status client.VMStatus, timeout time.Duration, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("VM %s did not become ready within %s (last phase=%s, IP addresses=%v); VM remains allocated: %w",
+			status.ID, timeout, status.Phase, status.IPAddresses, err)
+	}
+	return fmt.Errorf("waiting for VM %s readiness was canceled (last phase=%s, IP addresses=%v); VM remains allocated: %w",
+		status.ID, status.Phase, status.IPAddresses, err)
 }
 
 func readFile(path string, limit int64) ([]byte, error) {
