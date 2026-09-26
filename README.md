@@ -62,6 +62,100 @@ certificate is self-signed, so each runner must trust it before its HTTPS
 client can call the gateway. Do not commit the private key or disable TLS
 verification.
 
+## Client CLI
+
+`make build` builds both the server and `bin/harvester-runner-gateway-client`.
+The client uses HTTPS and supports every gateway API operation without needing
+`curl` or a Harvester kubeconfig. It can also be installed directly from this
+checkout with `go install ./cmd/harvester-runner-gateway-client`.
+
+For local use, configure the gateway's optional `localSmoke` credential as
+[described below](#local-shell), then point the client at the same token file:
+
+```sh
+export GATEWAY_URL=https://gateway.example.internal:8443
+export GATEWAY_TOKEN_FILE=/secure/path/local-smoke-token
+export GATEWAY_CA_CERT=/secure/path/gateway.crt # optional additional trusted CA
+client=./bin/harvester-runner-gateway-client
+
+"$client" health
+"$client" ready
+"$client" quota
+"$client" vm create \
+  --image default/ubuntu-24-04 --network default/vm-network \
+  --cpu 2 --memory 4Gi --boot-disk-size 20Gi \
+  --idempotency-key local-example-vm \
+  --ssh-public-key-file "$HOME/.ssh/id_ed25519.pub" \
+  --ttl-seconds 3600
+"$client" vm list
+```
+
+Save the returned `id` for subsequent commands. Successful JSON responses go to
+stdout with a trailing newline, so scripts can extract fields with `jq`.
+Commands whose API response has no body produce no output on success.
+
+| Command | Purpose |
+| --- | --- |
+| `health` | Check process health; no authentication |
+| `ready` | Check Harvester reachability; no authentication |
+| `quota` | Get repository usage and limits |
+| `vm create [flags]` | Create a VM or return the existing idempotent result |
+| `vm list` | List run-owned VMs |
+| `vm get ID` | Get VM status |
+| `vm delete ID` | Request VM deletion |
+| `vm power ID on` / `vm power ID off` | Set desired power state |
+| `vm reboot ID` | Request reboot |
+| `vm attach ID VOLUME_ID` | Request live volume attachment |
+| `vm detach ID VOLUME_ID` | Request volume detachment |
+| `volume create --size 10Gi --idempotency-key KEY` | Create an independent volume |
+| `volume list` | List run-owned independent volumes |
+| `volume get ID` | Get volume status |
+| `volume delete ID` | Request volume deletion |
+
+VM creation requires `--image`, `--network`, `--cpu`, `--memory`,
+`--boot-disk-size`, and `--idempotency-key`. Optional inputs are repeatable
+`--ssh-public-key-file` (up to 10 keys), `--user-data-file` (cloud-config up to
+64 KiB), and `--ttl-seconds`. Volume creation requires `--size` and
+`--idempotency-key`, and also accepts `--ttl-seconds`. An omitted TTL uses the
+server's six-hour default; an explicit TTL must be 1–86400 seconds. Reuse the
+same idempotency key and inputs when repeating a creation request.
+
+Global flags must precede the command, for example:
+
+```sh
+"$client" --url https://gateway.example.internal:8443 --timeout 45s vm get "$vm_id"
+"$client" vm create --help
+```
+
+| Global flag | Environment variable | Default |
+| --- | --- | --- |
+| `--url` | `GATEWAY_URL` | Required HTTPS URL; optional base-path prefix |
+| `--token-file` | `GATEWAY_TOKEN_FILE` | Unset |
+| `--ca-cert` | `GATEWAY_CA_CERT` | System trust only |
+| `--audience` | `GATEWAY_AUDIENCE` | `api://harvester-runner-gateway` |
+| `--timeout` | `GATEWAY_TIMEOUT` | `30s` per HTTP request |
+
+Flags override their corresponding environment variables. Authentication uses
+the configured token file first, then `GATEWAY_TOKEN`, then automatic GitHub
+Actions OIDC when `GITHUB_ACTIONS=true`. A configured credential that cannot be
+read or is malformed fails without falling back. Tokens are never passed as CLI
+arguments or printed. The CLI does not save credentials or profiles. The
+additional gateway CA does not change trust for GitHub OIDC requests. TLS
+verification stays enabled, and redirects are rejected.
+
+In GitHub Actions, grant `id-token: write` and set `GATEWAY_URL`, optionally
+`GATEWAY_AUDIENCE` and `GATEWAY_CA_CERT`. The client obtains a fresh OIDC token
+for each invocation using `ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The [example workflow](examples/workflow.yml)
+builds the client, creates a VM, reads its status, and requests cleanup.
+
+The client exits with `0` on success, `1` for HTTP, authentication, or transport
+failures, and `2` for invalid usage or local configuration. Errors go to stderr
+and include the HTTP status and gateway error code/message when available.
+Creation and action commands return as soon as the gateway accepts the request;
+poll `vm get` or `volume get` to observe completion. Mutations are not
+automatically retried. Deleting an absent resource remains an HTTP 404 failure.
+
 ## Authentication
 
 Workflow API calls use `Authorization: Bearer <GitHub OIDC JWT>`. Workflow jobs
@@ -129,8 +223,10 @@ Unit tests and builds run without a cluster. Live creation, actions, hotplug,
 and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
 before production use. The [smoke script](scripts/smoke.sh) creates a VM and an
 independent volume, exercises hotplug, power, and reboot, and cleans up both.
-It requires `bash`, `curl`, and `jq`; local runs also require `od` and `tr`. Use a
-gateway URL whose certificate is trusted by the machine running the script.
+It requires `bash`, `jq`, and the client built by `make build`; local runs also
+require `od` and `tr`. Set `GATEWAY_CLIENT` to use a client binary outside the
+default `bin/` directory. Use a gateway URL whose certificate is trusted by the
+machine running the script.
 
 ### GitHub Actions
 

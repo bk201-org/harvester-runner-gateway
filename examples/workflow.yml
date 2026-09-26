@@ -1,30 +1,32 @@
-name: Gateway smoke example
+name: Gateway client example
 on: workflow_dispatch
 
 jobs:
   vm:
     runs-on: harvester-runners
     permissions:
+      contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build gateway client
+        run: go build -o bin/harvester-runner-gateway-client ./cmd/harvester-runner-gateway-client
       - name: Create and inspect VM
         env:
           GATEWAY_URL: https://gateway.example.internal:8443
           GATEWAY_AUDIENCE: api://harvester-runner-gateway
+          # For a private CA, set GATEWAY_CA_CERT to a PEM file on the runner.
         shell: bash
         run: |
           set -euo pipefail
-          encoded_audience=$(printf '%s' "$GATEWAY_AUDIENCE" | jq -sRr @uri)
-          oidc=$(curl --fail --silent --show-error \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$encoded_audience" | jq -r .value)
-          request='{"image":"default/ubuntu-24-04","network":"default/vm-network","cpu":2,"memory":"4Gi","bootDiskSize":"20Gi","sshPublicKeys":[]}'
-          vm=$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $oidc" \
-            -H "Idempotency-Key: $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm" \
-            -H 'Content-Type: application/json' \
-            --data "$request" "$GATEWAY_URL/v1/vms")
-          vm_id=$(printf '%s' "$vm" | jq -r .id)
-          trap 'curl --fail --silent --show-error -X DELETE -H "Authorization: Bearer $oidc" "$GATEWAY_URL/v1/vms/$vm_id" || true' EXIT
-          curl --fail --silent --show-error \
-            -H "Authorization: Bearer $oidc" "$GATEWAY_URL/v1/vms/$vm_id" | jq .
+          client=./bin/harvester-runner-gateway-client
+          vm=$("$client" vm create \
+            --image default/ubuntu-24-04 --network default/vm-network \
+            --cpu 2 --memory 4Gi --boot-disk-size 20Gi \
+            --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm")
+          vm_id=$(printf '%s' "$vm" | jq -er .id)
+          trap '"$client" vm delete "$vm_id" || true' EXIT
+          "$client" vm get "$vm_id" | jq .

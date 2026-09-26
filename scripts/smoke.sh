@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for dependency in curl jq; do
-  command -v "$dependency" >/dev/null || { echo "$dependency is required" >&2; exit 2; }
-done
+command -v jq >/dev/null || { echo 'jq is required' >&2; exit 2; }
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+GATEWAY_CLIENT=${GATEWAY_CLIENT:-$script_dir/../bin/harvester-runner-gateway-client}
+command -v "$GATEWAY_CLIENT" >/dev/null || {
+  echo "Gateway client is required: $GATEWAY_CLIENT" >&2
+  echo 'Run make build or set GATEWAY_CLIENT to its path.' >&2
+  exit 2
+}
 
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   [[ "${GATEWAY_SMOKE:-}" == "1" ]] || { echo 'Set GATEWAY_SMOKE=1 to run the live smoke test' >&2; exit 2; }
@@ -14,17 +19,10 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC request token is required}"
   : "${GITHUB_RUN_ID:?GitHub run ID is required}"
   : "${GITHUB_RUN_ATTEMPT:?GitHub run attempt is required}"
-  GATEWAY_AUDIENCE=${GATEWAY_AUDIENCE:-api://harvester-runner-gateway}
-  GATEWAY_CA_CERT=${GATEWAY_CA_CERT:-}
+  export GATEWAY_AUDIENCE=${GATEWAY_AUDIENCE:-api://harvester-runner-gateway}
+  export GATEWAY_CA_CERT=${GATEWAY_CA_CERT:-}
+  unset GATEWAY_TOKEN GATEWAY_TOKEN_FILE
   attempt="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-
-  token() {
-    local encoded
-    encoded=$(printf '%s' "$GATEWAY_AUDIENCE" | jq -sRr @uri)
-    curl --fail --silent --show-error \
-      -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$encoded" | jq -er .value
-  }
 else
   for dependency in od tr; do
     command -v "$dependency" >/dev/null || { echo "$dependency is required for local smoke runs" >&2; exit 2; }
@@ -51,61 +49,42 @@ else
   GATEWAY_URL=$(config_value gatewayURL)
   GATEWAY_IMAGE=$(config_value image)
   GATEWAY_NETWORK=$(config_value network)
-  token_file=$(config_value tokenFile)
+  GATEWAY_TOKEN_FILE=$(config_value tokenFile)
   GATEWAY_CA_CERT=$(config_optional_value caCert)
-  [[ -r "$token_file" ]] || { echo "Cannot read local smoke token file: $token_file" >&2; exit 2; }
-  local_token=$(<"$token_file")
+  [[ -r "$GATEWAY_TOKEN_FILE" ]] || { echo "Cannot read local smoke token file: $GATEWAY_TOKEN_FILE" >&2; exit 2; }
+  local_token=$(<"$GATEWAY_TOKEN_FILE")
   [[ "$local_token" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Local smoke token must contain 64 hex characters' >&2; exit 2; }
+  unset local_token
+  export GATEWAY_TOKEN_FILE GATEWAY_CA_CERT
+  unset GATEWAY_TOKEN
   attempt="local-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
-
-  token() { printf '%s\n' "$local_token"; }
 fi
 
 [[ "$GATEWAY_URL" == https://* ]] || { echo 'Gateway URL must use HTTPS' >&2; exit 2; }
 if [[ -n "$GATEWAY_CA_CERT" ]]; then
   [[ -r "$GATEWAY_CA_CERT" ]] || { echo "Cannot read gateway CA certificate: $GATEWAY_CA_CERT" >&2; exit 2; }
-  gateway_tls_args=(--cacert "$GATEWAY_CA_CERT")
-else
-  gateway_tls_args=()
 fi
-GATEWAY_URL=${GATEWAY_URL%/}
+export GATEWAY_URL
 GATEWAY_MEMORY=${GATEWAY_MEMORY:-2Gi}
 GATEWAY_BOOT_DISK=${GATEWAY_BOOT_DISK:-20Gi}
 GATEWAY_VOLUME_SIZE=${GATEWAY_VOLUME_SIZE:-1Gi}
 vm_id=''
 volume_id=''
 
-api() {
-  local method=$1 path=$2 body=${3:-} key=${4:-} jwt response curl_status
-  jwt=$(token)
-  local args=(--fail-with-body --silent --show-error -X "$method")
-  if [[ -n "$body" ]]; then args+=(-H 'Content-Type: application/json' --data "$body"); fi
-  if [[ -n "$key" ]]; then args+=(-H "Idempotency-Key: $key"); fi
-  # Passing the header on stdin keeps the long-lived local token out of curl's argv.
-  if response=$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
-    curl "${gateway_tls_args[@]}" --config - "${args[@]}" "$GATEWAY_URL$path"); then
-    printf '%s' "$response"
-  else
-    curl_status=$?
-    [[ -z "$response" ]] || printf '%s\n' "$response" >&2
-    return "$curl_status"
-  fi
-}
-
 cleanup() {
   set +e
   if [[ -n "$vm_id" && -n "$volume_id" ]]; then
-    api DELETE "/v1/vms/$vm_id/volumes/$volume_id" >/dev/null 2>&1
+    "$GATEWAY_CLIENT" vm detach "$vm_id" "$volume_id" >/dev/null 2>&1
   fi
-  if [[ -n "$volume_id" ]]; then api DELETE "/v1/volumes/$volume_id" >/dev/null 2>&1; fi
-  if [[ -n "$vm_id" ]]; then api DELETE "/v1/vms/$vm_id" >/dev/null 2>&1; fi
+  if [[ -n "$volume_id" ]]; then "$GATEWAY_CLIENT" volume delete "$volume_id" >/dev/null 2>&1; fi
+  if [[ -n "$vm_id" ]]; then "$GATEWAY_CLIENT" vm delete "$vm_id" >/dev/null 2>&1; fi
 }
 trap cleanup EXIT
 
 wait_for() {
   local kind=$1 id=$2 field=$3 expected=$4 value
   for _ in {1..120}; do
-    value=$(api GET "/v1/$kind/$id" | jq -r "$field")
+    value=$("$GATEWAY_CLIENT" "$kind" get "$id" | jq -r "$field")
     if [[ "$value" == "$expected" ]]; then return 0; fi
     sleep 5
   done
@@ -113,31 +92,32 @@ wait_for() {
   return 1
 }
 
-vm_request=$(jq -n --arg image "$GATEWAY_IMAGE" --arg network "$GATEWAY_NETWORK" \
-  --arg memory "$GATEWAY_MEMORY" --arg disk "$GATEWAY_BOOT_DISK" \
-  '{image:$image,network:$network,cpu:2,memory:$memory,bootDiskSize:$disk,ttlSeconds:3600}')
-vm_id=$(api POST /v1/vms "$vm_request" "$attempt-vm" | jq -er .id)
+vm_id=$("$GATEWAY_CLIENT" vm create \
+  --image "$GATEWAY_IMAGE" --network "$GATEWAY_NETWORK" \
+  --cpu 2 --memory "$GATEWAY_MEMORY" --boot-disk-size "$GATEWAY_BOOT_DISK" \
+  --ttl-seconds 3600 --idempotency-key "$attempt-vm" | jq -er .id)
 echo "Created VM $vm_id"
-wait_for vms "$vm_id" .phase Running
+wait_for vm "$vm_id" .phase Running
 
-volume_request=$(jq -n --arg size "$GATEWAY_VOLUME_SIZE" '{size:$size,ttlSeconds:3600}')
-volume_id=$(api POST /v1/volumes "$volume_request" "$attempt-volume" | jq -er .id)
+volume_id=$("$GATEWAY_CLIENT" volume create \
+  --size "$GATEWAY_VOLUME_SIZE" --ttl-seconds 3600 \
+  --idempotency-key "$attempt-volume" | jq -er .id)
 echo "Created volume $volume_id"
-wait_for volumes "$volume_id" .phase Bound
+wait_for volume "$volume_id" .phase Bound
 
-api PUT "/v1/vms/$vm_id/volumes/$volume_id" >/dev/null
-wait_for volumes "$volume_id" .attachmentPhase Ready
-api DELETE "/v1/vms/$vm_id/volumes/$volume_id" >/dev/null
-wait_for volumes "$volume_id" .attachedTo null
-api DELETE "/v1/volumes/$volume_id" >/dev/null
+"$GATEWAY_CLIENT" vm attach "$vm_id" "$volume_id"
+wait_for volume "$volume_id" .attachmentPhase Ready
+"$GATEWAY_CLIENT" vm detach "$vm_id" "$volume_id"
+wait_for volume "$volume_id" .attachedTo null
+"$GATEWAY_CLIENT" volume delete "$volume_id"
 volume_id=''
 
-api PUT "/v1/vms/$vm_id/power" '{"state":"off"}' >/dev/null
-wait_for vms "$vm_id" .powerState off
-api PUT "/v1/vms/$vm_id/power" '{"state":"on"}' >/dev/null
-wait_for vms "$vm_id" .phase Running
-api POST "/v1/vms/$vm_id/reboot" >/dev/null
-api DELETE "/v1/vms/$vm_id" >/dev/null
+"$GATEWAY_CLIENT" vm power "$vm_id" off
+wait_for vm "$vm_id" .powerState off
+"$GATEWAY_CLIENT" vm power "$vm_id" on
+wait_for vm "$vm_id" .phase Running
+"$GATEWAY_CLIENT" vm reboot "$vm_id"
+"$GATEWAY_CLIENT" vm delete "$vm_id"
 vm_id=''
 trap - EXIT
 echo 'Gateway smoke test passed'
