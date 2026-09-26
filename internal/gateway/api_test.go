@@ -397,14 +397,15 @@ func TestQuotaSharedAcrossRunsAndAttempts(t *testing.T) {
 	}
 }
 
-func TestResourceIdentityUsesShortHRGWName(t *testing.T) {
+func TestResourceIdentityUsesRunnerGatewayName(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "2"}
 	id, hash := resourceIdentity(owner, "vm", "example", vmRequest())
-	if id != "hrgw-u6bpqc4qo7b6k35d" {
+	if id != "runner-gw-u6bpqc4qo7b6k35d" {
 		t.Fatalf("ID = %q", id)
 	}
-	if old := legacyResourceID(owner, "vm", "example"); old != "rgw-u6bpqc4qo7b6k35diocof63v" {
-		t.Fatalf("legacy ID = %q", old)
+	legacy := legacyResourceIDs(owner, "vm", "example")
+	if len(legacy) != 2 || legacy[0] != "hrgw-u6bpqc4qo7b6k35d" || legacy[1] != "rgw-u6bpqc4qo7b6k35diocof63v" {
+		t.Fatalf("legacy IDs = %v", legacy)
 	}
 	changed := vmRequest()
 	changed.CPU++
@@ -416,42 +417,44 @@ func TestResourceIdentityUsesShortHRGWName(t *testing.T) {
 
 func TestLegacyResourceIDRetry(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "run-one", RunAttempt: "1"}
-	s := testServer(2, 2)
-	backend := s.backend.(*fakeBackend)
-	vmID := legacyResourceID(owner, "vm", "old-vm")
-	vmBody := vmRequest()
-	vmBody.TTLSeconds = int(config.DefaultTTL.Seconds())
-	_, vmHash := resourceIdentity(owner, "vm", "old-vm", vmBody)
-	backend.vms[vmID] = fakeVM{owner: owner, item: VMStatus{ID: vmID, RequestHash: vmHash}}
-	volumeID := legacyResourceID(owner, "volume", "old-volume")
-	_, volumeHash := resourceIdentity(owner, "volume", "old-volume", VolumeRequest{Size: "1Gi", TTLSeconds: int(config.DefaultTTL.Seconds())})
-	backend.volumes[volumeID] = fakeVolume{owner: owner, item: VolumeStatus{ID: volumeID, RequestHash: volumeHash}}
+	for _, legacyIndex := range []int{0, 1} {
+		s := testServer(2, 2)
+		backend := s.backend.(*fakeBackend)
+		vmID := legacyResourceIDs(owner, "vm", "old-vm")[legacyIndex]
+		vmBody := vmRequest()
+		vmBody.TTLSeconds = int(config.DefaultTTL.Seconds())
+		_, vmHash := resourceIdentity(owner, "vm", "old-vm", vmBody)
+		backend.vms[vmID] = fakeVM{owner: owner, item: VMStatus{ID: vmID, RequestHash: vmHash}}
+		volumeID := legacyResourceIDs(owner, "volume", "old-volume")[legacyIndex]
+		_, volumeHash := resourceIdentity(owner, "volume", "old-volume", VolumeRequest{Size: "1Gi", TTLSeconds: int(config.DefaultTTL.Seconds())})
+		backend.volumes[volumeID] = fakeVolume{owner: owner, item: VolumeStatus{ID: volumeID, RequestHash: volumeHash}}
 
-	for _, tc := range []struct {
-		path, key, id string
-		body          any
-	}{
-		{"/v1/vms", "old-vm", vmID, vmRequest()},
-		{"/v1/volumes", "old-volume", volumeID, VolumeRequest{Size: "1Gi"}},
-	} {
-		got := doRequest(s, http.MethodPost, tc.path, "run-one", tc.key, tc.body)
-		if got.Code != http.StatusOK {
-			t.Fatalf("retry %s: %d %s", tc.path, got.Code, got.Body.String())
+		for _, tc := range []struct {
+			path, key, id string
+			body          any
+		}{
+			{"/v1/vms", "old-vm", vmID, vmRequest()},
+			{"/v1/volumes", "old-volume", volumeID, VolumeRequest{Size: "1Gi"}},
+		} {
+			got := doRequest(s, http.MethodPost, tc.path, "run-one", tc.key, tc.body)
+			if got.Code != http.StatusOK {
+				t.Fatalf("retry %s for %s: %d %s", tc.path, tc.id, got.Code, got.Body.String())
+			}
+			var item struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(got.Body.Bytes(), &item); err != nil || item.ID != tc.id {
+				t.Fatalf("retry %s for %s: ID %q, error %v", tc.path, tc.id, item.ID, err)
+			}
 		}
-		var item struct {
-			ID string `json:"id"`
+		changed := vmRequest()
+		changed.CPU++
+		if got := doRequest(s, http.MethodPost, "/v1/vms", "run-one", "old-vm", changed); got.Code != http.StatusConflict {
+			t.Fatalf("changed legacy retry for %s: %d %s", vmID, got.Code, got.Body.String())
 		}
-		if err := json.Unmarshal(got.Body.Bytes(), &item); err != nil || item.ID != tc.id {
-			t.Fatalf("retry %s: ID %q, error %v", tc.path, item.ID, err)
+		if len(backend.vms) != 1 || len(backend.volumes) != 1 {
+			t.Fatalf("retry created a duplicate: %d VMs, %d volumes", len(backend.vms), len(backend.volumes))
 		}
-	}
-	changed := vmRequest()
-	changed.CPU++
-	if got := doRequest(s, http.MethodPost, "/v1/vms", "run-one", "old-vm", changed); got.Code != http.StatusConflict {
-		t.Fatalf("changed legacy retry: %d %s", got.Code, got.Body.String())
-	}
-	if len(backend.vms) != 1 || len(backend.volumes) != 1 {
-		t.Fatalf("retry created a duplicate: %d VMs, %d volumes", len(backend.vms), len(backend.volumes))
 	}
 }
 

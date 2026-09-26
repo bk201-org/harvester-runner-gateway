@@ -22,7 +22,7 @@ import (
 func TestFailedVMDeletionKeepsRootAndCloudInit(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	expires := time.Now().Add(-time.Minute)
-	id := "rgw-expired"
+	id := "runner-gw-expired"
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
 		"metadata": map[string]any{"name": id, "namespace": "ci", "labels": stringMap(ownerLabels(owner, "vm")),

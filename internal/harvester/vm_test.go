@@ -37,7 +37,7 @@ func TestRenderCloudConfigMergesSSHKeys(t *testing.T) {
 func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	labels := ownerLabels(owner, "vm")
-	vm, err := buildVM("ci", "hrgw-example", gateway.VMRequest{
+	vm, err := buildVM("ci", "runner-gw-example", gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/vm-network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
 	}, "longhorn", labels, map[string]string{expiresKey: "1000", hashKey: "digest"})
@@ -57,7 +57,7 @@ func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
 		t.Fatalf("volumes=%v err=%v", volumes, err)
 	}
 	cloudDisk := volumes[1].(map[string]any)["cloudInitNoCloud"].(map[string]any)
-	if cloudDisk["secretRef"].(map[string]any)["name"] != "hrgw-example-init" {
+	if cloudDisk["secretRef"].(map[string]any)["name"] != "runner-gw-example-init" {
 		t.Fatalf("wrong cloud-init secret: %v", cloudDisk)
 	}
 	var template []map[string]any
@@ -65,17 +65,20 @@ func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
 		t.Fatalf("claim template: %v %v", template, err)
 	}
 	metadata := template[0]["metadata"].(map[string]any)
-	if metadata["name"] != "hrgw-example-root" {
+	if metadata["name"] != "runner-gw-example-root" {
 		t.Fatalf("wrong root claim: %v", metadata)
 	}
 	rootAnnotations := metadata["annotations"].(map[string]any)
 	if rootAnnotations[imageKey] != "default/ubuntu" {
 		t.Fatalf("wrong source image: %v", rootAnnotations)
 	}
+	if vm.GetLabels()[repoLabel] != owner.RepositoryID || vm.GetAnnotations()[expiresKey] != "1000" || vm.GetAnnotations()[hashKey] != "digest" {
+		t.Fatalf("wrong gateway metadata: labels=%v annotations=%v", vm.GetLabels(), vm.GetAnnotations())
+	}
 }
 
 func TestValidIDAcceptsCurrentAndLegacyNames(t *testing.T) {
-	for _, id := range []string{"hrgw-u6bpqc4qo7b6k35d", "rgw-u6bpqc4qo7b6k35diocof63v"} {
+	for _, id := range []string{"runner-gw-u6bpqc4qo7b6k35d", "hrgw-u6bpqc4qo7b6k35d", "rgw-u6bpqc4qo7b6k35diocof63v"} {
 		if !validID(id) {
 			t.Fatalf("valid gateway ID rejected: %s", id)
 		}
@@ -87,11 +90,12 @@ func TestValidIDAcceptsCurrentAndLegacyNames(t *testing.T) {
 
 func TestVMStatusListsCurrentAndLegacyVolumes(t *testing.T) {
 	vm := &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": "hrgw-example"},
+		"metadata": map[string]any{"name": "runner-gw-example"},
 		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
 			"volumes": []any{
-				map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "hrgw-example-root"}},
-				map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "hrgw-new-volume"}},
+				map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "runner-gw-example-root"}},
+				map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "runner-gw-new-volume"}},
+				map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "hrgw-old-volume"}},
 				map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "rgw-old-volume"}},
 			},
 		}}},
@@ -101,7 +105,7 @@ func TestVMStatusListsCurrentAndLegacyVolumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.AttachedVolumeIDs) != 2 || status.AttachedVolumeIDs[0] != "hrgw-new-volume" || status.AttachedVolumeIDs[1] != "rgw-old-volume" {
+	if len(status.AttachedVolumeIDs) != 3 || status.AttachedVolumeIDs[0] != "runner-gw-new-volume" || status.AttachedVolumeIDs[1] != "hrgw-old-volume" || status.AttachedVolumeIDs[2] != "rgw-old-volume" {
 		t.Fatalf("attached volumes = %v", status.AttachedVolumeIDs)
 	}
 	if status.Ready || len(status.IPAddresses) != 0 || status.PowerState != "off" {
@@ -160,12 +164,12 @@ func TestVMStatusReadinessRequiresRunningVMIWithUsableNICAddress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			vm := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
-				"metadata": map[string]any{"name": "hrgw-example", "namespace": "ci"},
+				"metadata": map[string]any{"name": "runner-gw-example", "namespace": "ci"},
 				"status":   map[string]any{"printableStatus": "Running"},
 			}}
 			vmi := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachineInstance",
-				"metadata": map[string]any{"name": "hrgw-example", "namespace": "ci"},
+				"metadata": map[string]any{"name": "runner-gw-example", "namespace": "ci"},
 				"status":   map[string]any{"phase": test.phase, "interfaces": test.interfaces},
 			}}
 			backend := &Backend{dynamic: fake.NewSimpleDynamicClient(runtime.NewScheme(), vmi)}

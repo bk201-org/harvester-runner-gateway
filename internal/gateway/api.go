@@ -229,7 +229,7 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		return
 	}
 	defer finish()
-	for _, candidate := range []string{id, legacyResourceID(owner, "vm", key)} {
+	for _, candidate := range append([]string{id}, legacyResourceIDs(owner, "vm", key)...) {
 		if existing, err := s.backend.GetVM(r.Context(), policy, owner, candidate); err == nil {
 			if existing.RequestHash != digest {
 				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
@@ -346,7 +346,7 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		return
 	}
 	defer finish()
-	for _, candidate := range []string{id, legacyResourceID(owner, "volume", key)} {
+	for _, candidate := range append([]string{id}, legacyResourceIDs(owner, "volume", key)...) {
 		if existing, err := s.backend.GetVolume(r.Context(), policy, owner, candidate); err == nil {
 			if existing.RequestHash != digest {
 				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
@@ -470,11 +470,14 @@ func validQuantity(value, maximum string) bool {
 func resourceIdentity(owner auth.Owner, kind, key string, request any) (string, string) {
 	data, _ := json.Marshal(request)
 	digest := sha256.Sum256(data)
-	return resourceID(owner, kind, key, "hrgw-", 10), hex.EncodeToString(digest[:])
+	return resourceID(owner, kind, key, "runner-gw-", 10), hex.EncodeToString(digest[:])
 }
 
-func legacyResourceID(owner auth.Owner, kind, key string) string {
-	return resourceID(owner, kind, key, "rgw-", 15)
+func legacyResourceIDs(owner auth.Owner, kind, key string) []string {
+	return []string{
+		resourceID(owner, kind, key, "hrgw-", 10),
+		resourceID(owner, kind, key, "rgw-", 15),
+	}
 }
 
 func resourceID(owner auth.Owner, kind, key, prefix string, hashBytes int) string {

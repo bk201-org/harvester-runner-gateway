@@ -35,13 +35,15 @@ include an expiry time; VM and independent volume objects also carry a hash of
 the create request. The Kubernetes objects are the durable resource record. The
 gateway has no resource database, VM status cache, or Kubernetes informer.
 
-For a create request, the gateway derives a stable `hrgw-` resource ID from
+For a create request, the gateway derives a stable `runner-gw-` resource ID from
 the owner, resource kind, and `Idempotency-Key`. The suffix is the unpadded
 lowercase base32 encoding of the first 10 bytes of the SHA-256 identity hash
 (16 characters, 80 bits). It hashes the request body separately. If that ID
 already exists with the same request hash, the API returns the existing resource.
-A different request with the same key returns a conflict. Legacy `rgw-` IDs
-remain readable, and retries with their original keys return those resources.
+A different request with the same key returns a conflict. Existing `hrgw-` and
+`rgw-` IDs remain readable, and retries with their original keys return those
+resources. New resources use `runner-gw-` labels and annotations; existing
+resources retain their old metadata keys until they expire.
 
 ## How VM status is read
 
@@ -63,7 +65,7 @@ remain readable, and retries with their original keys return those resources.
    IP list. `ready` is true only when the VMI phase is `Running` and that list is
    nonempty.
 
-`GET /v1/vms` lists owner-labeled VM objects from the cluster and builds the
+`GET /v1/vms` lists gateway-managed VM objects, filters them by owner, and builds the
 same status for each one, including a VMI lookup. `GET /v1/volumes/{id}` reads
 the PVC and checks cluster objects for attachment state. These reads do not
 return an in-memory snapshot. If a cluster read fails for a reason other than

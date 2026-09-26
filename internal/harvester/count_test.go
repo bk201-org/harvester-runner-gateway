@@ -16,6 +16,11 @@ import (
 	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
+func legacyOwnerLabels(owner auth.Owner, kind string) map[string]string {
+	return map[string]string{managedLabel: managedValue, legacyRepoLabel: owner.RepositoryID,
+		legacyRunLabel: owner.RunID, legacyAttemptLabel: owner.RunAttempt, legacyKindLabel: kind}
+}
+
 func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	otherRun := auth.Owner{RepositoryID: "123", RunID: "789", RunAttempt: "1"}
@@ -31,6 +36,7 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 		map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList"},
 		vm("owned-1", ownerLabels(owner, "vm")),
 		vm("owned-2", ownerLabels(owner, "vm")),
+		vm("legacy-owned", legacyOwnerLabels(owner, "vm")),
 		vm("other-run", ownerLabels(otherRun, "vm")),
 		vm("other-attempt", ownerLabels(otherAttempt, "vm")),
 		vm("other-repo", ownerLabels(otherRepo, "vm")),
@@ -44,6 +50,7 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 	}
 	kube := kubefake.NewClientset(
 		pvc("owned-volume", ownerLabels(owner, "volume")),
+		pvc("legacy-volume", legacyOwnerLabels(owner, "volume")),
 		pvc("other-run-volume", ownerLabels(otherRun, "volume")),
 		pvc("other-attempt-volume", ownerLabels(otherAttempt, "volume")),
 		pvc("root-disk", ownerLabels(owner, "vm-root")),
@@ -54,12 +61,12 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci"}
 
 	vms, err := backend.CountVMs(context.Background(), policy)
-	if err != nil || vms != 4 {
-		t.Fatalf("VM count = %d, error = %v; want 4", vms, err)
+	if err != nil || vms != 5 {
+		t.Fatalf("VM count = %d, error = %v; want 5", vms, err)
 	}
 	volumes, err := backend.CountVolumes(context.Background(), policy)
-	if err != nil || volumes != 3 {
-		t.Fatalf("volume count = %d, error = %v; want 3", volumes, err)
+	if err != nil || volumes != 4 {
+		t.Fatalf("volume count = %d, error = %v; want 4", volumes, err)
 	}
 	if actions := dynamicClient.Actions(); len(actions) != 1 || actions[0].GetVerb() != "list" || actions[0].GetResource().Resource != "virtualmachines" {
 		t.Fatalf("unexpected dynamic client actions: %v", actions)

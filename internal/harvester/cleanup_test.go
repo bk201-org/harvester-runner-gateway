@@ -2,6 +2,7 @@ package harvester
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,17 +25,17 @@ func TestCleanupExpiredRemovesVMRootAndSecret(t *testing.T) {
 	id := "rgw-expired"
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
-		"metadata": map[string]any{"name": id, "namespace": "ci", "labels": stringMap(ownerLabels(owner, "vm")),
-			"annotations": stringMap(annotations(expires, "hash"))},
+		"metadata": map[string]any{"name": id, "namespace": "ci", "labels": stringMap(legacyOwnerLabels(owner, "vm")),
+			"annotations": stringMap(map[string]string{legacyExpiresKey: fmt.Sprint(expires.Unix()), legacyHashKey: "hash"})},
 		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
 			"volumes": []any{map[string]any{"name": "rootdisk", "persistentVolumeClaim": map[string]any{"claimName": id + "-root"}}},
 		}}},
 	}}
 	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList"}, vm)
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: id + "-root", Namespace: "ci",
-		Labels: ownerLabels(owner, "vm-root"), Annotations: annotations(expires, "hash")}}
+		Labels: legacyOwnerLabels(owner, "vm-root"), Annotations: map[string]string{legacyExpiresKey: fmt.Sprint(expires.Unix()), legacyHashKey: "hash"}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: id + "-init", Namespace: "ci",
-		Labels: ownerLabels(owner, "cloud-init"), Annotations: annotations(expires, "hash")}}
+		Labels: legacyOwnerLabels(owner, "cloud-init"), Annotations: map[string]string{legacyExpiresKey: fmt.Sprint(expires.Unix()), legacyHashKey: "hash"}}}
 	kube := kubefake.NewClientset(pvc, secret)
 	backend := &Backend{dynamic: dynamicClient, kube: kube,
 		cfg: config.Config{Repositories: []config.RepositoryPolicy{{RepositoryID: "123", Namespace: "ci"}}}}

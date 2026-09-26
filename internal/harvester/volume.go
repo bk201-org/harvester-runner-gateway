@@ -32,26 +32,35 @@ func (b *Backend) getOwnedVolume(ctx context.Context, policy config.RepositoryPo
 	return pvc, nil
 }
 
-func (b *Backend) listOwnedVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (*corev1.PersistentVolumeClaimList, error) {
-	return b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "volume")})
+func (b *Backend) listManagedVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (*corev1.PersistentVolumeClaimList, error) {
+	return b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 }
 
 func (b *Backend) CountVolumes(ctx context.Context, policy config.RepositoryPolicy) (int, error) {
 	list, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx,
-		metav1.ListOptions{LabelSelector: repositorySelector(policy.RepositoryID, "volume")})
+		metav1.ListOptions{LabelSelector: managedSelector()})
 	if err != nil {
 		return 0, err
 	}
-	return len(list.Items), nil
+	count := 0
+	for i := range list.Items {
+		if repositoryOwned(list.Items[i].Labels, policy.RepositoryID, "volume") {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (b *Backend) ListVolumes(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) ([]gateway.VolumeStatus, error) {
-	list, err := b.listOwnedVolumes(ctx, policy, owner)
+	list, err := b.listManagedVolumes(ctx, policy, owner)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]gateway.VolumeStatus, 0, len(list.Items))
 	for i := range list.Items {
+		if !owned(list.Items[i].Labels, owner, "volume") {
+			continue
+		}
 		status, err := b.volumeStatus(ctx, policy.Namespace, &list.Items[i])
 		if err != nil {
 			return nil, err
@@ -75,7 +84,7 @@ func (b *Backend) volumeStatus(ctx context.Context, namespace string, pvc *corev
 		return gateway.VolumeStatus{}, err
 	}
 	status := gateway.VolumeStatus{ID: pvc.Name, Phase: string(pvc.Status.Phase), Size: pvc.Spec.Resources.Requests.Storage().String(),
-		ExpiresAt: expiry(pvc.Annotations), RequestHash: pvc.Annotations[hashKey]}
+		ExpiresAt: expiry(pvc.Annotations), RequestHash: annotationValue(pvc.Annotations, hashKey, legacyHashKey)}
 	if status.Phase == "" {
 		status.Phase = "Pending"
 	}
@@ -346,14 +355,14 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 			continue
 		}
 		seen[policy.Namespace] = true
-		vms, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedLabel + "=" + managedValue + "," + kindLabel + "=vm"})
+		vms, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 		if err != nil {
 			problems = append(problems, err)
 			continue
 		}
 		for i := range vms.Items {
 			vm := &vms.Items[i]
-			if now.Before(expiry(vm.GetAnnotations())) {
+			if labelKind(vm.GetLabels()) != "vm" || now.Before(expiry(vm.GetAnnotations())) {
 				continue
 			}
 			owner := parseOwner(vm.GetLabels())
@@ -361,17 +370,18 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 				problems = append(problems, fmt.Errorf("delete expired VM %s: %w", vm.GetName(), err))
 			}
 		}
-		volumes, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedLabel + "=" + managedValue})
+		volumes, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 		if err != nil {
 			problems = append(problems, err)
 			continue
 		}
 		for i := range volumes.Items {
 			pvc := &volumes.Items[i]
-			if now.Before(expiry(pvc.Annotations)) {
+			kind := labelKind(pvc.Labels)
+			if (kind != "volume" && kind != "vm-root") || now.Before(expiry(pvc.Annotations)) {
 				continue
 			}
-			if pvc.Labels[kindLabel] == "volume" {
+			if kind == "volume" {
 				owner := parseOwner(pvc.Labels)
 				attached, err := b.attachedVM(ctx, policy.Namespace, pvc.Name)
 				if err != nil {
@@ -385,7 +395,7 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 					continue
 				}
 			}
-			if pvc.Labels[kindLabel] == "vm-root" {
+			if kind == "vm-root" {
 				vmID := strings.TrimSuffix(pvc.Name, "-root")
 				if vmID == pvc.Name {
 					continue
@@ -398,21 +408,21 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 				if !gone {
 					continue
 				}
-			} else if pvc.Labels[kindLabel] != "volume" {
+			} else if kind != "volume" {
 				continue
 			}
 			if err := deleteIgnoringMissing(b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Delete(ctx, pvc.Name, metav1.DeleteOptions{})); err != nil {
 				problems = append(problems, err)
 			}
 		}
-		secrets, err := b.kube.CoreV1().Secrets(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedLabel + "=" + managedValue + "," + kindLabel + "=cloud-init"})
+		secrets, err := b.kube.CoreV1().Secrets(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 		if err != nil {
 			problems = append(problems, err)
 			continue
 		}
 		for i := range secrets.Items {
 			item := &secrets.Items[i]
-			if !now.Before(expiry(item.Annotations)) {
+			if labelKind(item.Labels) == "cloud-init" && !now.Before(expiry(item.Annotations)) {
 				vmID := strings.TrimSuffix(item.Name, "-init")
 				if vmID == item.Name {
 					continue

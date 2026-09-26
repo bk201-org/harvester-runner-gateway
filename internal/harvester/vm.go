@@ -37,26 +37,35 @@ func (b *Backend) getOwnedVM(ctx context.Context, policy config.RepositoryPolicy
 	return vm, nil
 }
 
-func (b *Backend) listOwnedVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (*unstructured.UnstructuredList, error) {
-	return b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: ownerSelector(owner, "vm")})
+func (b *Backend) listManagedVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) (*unstructured.UnstructuredList, error) {
+	return b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 }
 
 func (b *Backend) CountVMs(ctx context.Context, policy config.RepositoryPolicy) (int, error) {
 	list, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).List(ctx,
-		metav1.ListOptions{LabelSelector: repositorySelector(policy.RepositoryID, "vm")})
+		metav1.ListOptions{LabelSelector: managedSelector()})
 	if err != nil {
 		return 0, err
 	}
-	return len(list.Items), nil
+	count := 0
+	for i := range list.Items {
+		if repositoryOwned(list.Items[i].GetLabels(), policy.RepositoryID, "vm") {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (b *Backend) ListVMs(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner) ([]gateway.VMStatus, error) {
-	list, err := b.listOwnedVMs(ctx, policy, owner)
+	list, err := b.listManagedVMs(ctx, policy, owner)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]gateway.VMStatus, 0, len(list.Items))
 	for i := range list.Items {
+		if !owned(list.Items[i].GetLabels(), owner, "vm") {
+			continue
+		}
 		item, err := b.vmStatus(ctx, policy.Namespace, &list.Items[i])
 		if err != nil {
 			return nil, err
@@ -77,7 +86,7 @@ func (b *Backend) GetVM(ctx context.Context, policy config.RepositoryPolicy, own
 func (b *Backend) vmStatus(ctx context.Context, namespace string, vm *unstructured.Unstructured) (gateway.VMStatus, error) {
 	status := gateway.VMStatus{ID: vm.GetName(), Phase: nestedString(vm, "status", "printableStatus"),
 		PowerState: "off", IPAddresses: []string{}, AttachedVolumeIDs: []string{},
-		ExpiresAt: expiry(vm.GetAnnotations()), RequestHash: vm.GetAnnotations()[hashKey]}
+		ExpiresAt: expiry(vm.GetAnnotations()), RequestHash: annotationValue(vm.GetAnnotations(), hashKey, legacyHashKey)}
 	if status.Phase == "" {
 		status.Phase = "Provisioning"
 	}
@@ -195,7 +204,7 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 		if getErr != nil {
 			return gateway.VMStatus{}, translate(getErr)
 		}
-		if !owned(existing.Labels, owner, "cloud-init") || existing.Annotations[hashKey] != hash {
+		if !owned(existing.Labels, owner, "cloud-init") || annotationValue(existing.Annotations, hashKey, legacyHashKey) != hash {
 			return gateway.VMStatus{}, fmt.Errorf("%w: cloud-init Secret name is occupied", gateway.ErrConflict)
 		}
 		copy := existing.DeepCopy()

@@ -212,18 +212,18 @@ func TestWaitForVMReadyPollsUntilReady(t *testing.T) {
 	calls := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/vms/hrgw-example" {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/vms/runner-gw-example" {
 			t.Errorf("got %s %s", r.Method, r.URL.Path)
 		}
 		if calls == 1 {
-			fmt.Fprint(w, `{"id":"hrgw-example","phase":"Running","ready":false,"ipAddresses":[]}`)
+			fmt.Fprint(w, `{"id":"runner-gw-example","phase":"Running","ready":false,"ipAddresses":[]}`)
 			return
 		}
-		fmt.Fprint(w, `{"id":"hrgw-example","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`)
+		fmt.Fprint(w, `{"id":"runner-gw-example","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`)
 	}))
 	defer server.Close()
 
-	initial := []byte(`{"id":"hrgw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
+	initial := []byte(`{"id":"runner-gw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
 	data, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, time.Second, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
@@ -235,14 +235,14 @@ func TestWaitForVMReadyPollsUntilReady(t *testing.T) {
 }
 
 func TestWaitForVMReadyFailuresKeepVM(t *testing.T) {
-	initial := []byte(`{"id":"hrgw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
+	initial := []byte(`{"id":"runner-gw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
 	t.Run("timeout", func(t *testing.T) {
 		var getCalls, deleteCalls int
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
 				getCalls++
-				fmt.Fprint(w, `{"id":"hrgw-example","phase":"Starting","ready":false,"ipAddresses":[]}`)
+				fmt.Fprint(w, `{"id":"runner-gw-example","phase":"Starting","ready":false,"ipAddresses":[]}`)
 			case http.MethodDelete:
 				deleteCalls++
 				w.WriteHeader(http.StatusNoContent)
@@ -250,7 +250,7 @@ func TestWaitForVMReadyFailuresKeepVM(t *testing.T) {
 		}))
 		defer server.Close()
 		_, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, 10*time.Millisecond, time.Millisecond)
-		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "hrgw-example") ||
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "runner-gw-example") ||
 			!strings.Contains(err.Error(), "last phase=Starting") || !strings.Contains(err.Error(), "remains allocated") {
 			t.Fatalf("unexpected timeout error: %v", err)
 		}
@@ -267,7 +267,7 @@ func TestWaitForVMReadyFailuresKeepVM(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := waitForVMReady(ctx, newReadinessTestClient(t, server), initial, time.Minute, time.Hour)
-		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "hrgw-example") || !strings.Contains(err.Error(), "remains allocated") {
+		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "runner-gw-example") || !strings.Contains(err.Error(), "remains allocated") {
 			t.Fatalf("unexpected cancellation error: %v", err)
 		}
 	})
@@ -278,7 +278,7 @@ func TestWaitForVMReadyFailuresKeepVM(t *testing.T) {
 		}))
 		defer server.Close()
 		_, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, time.Second, time.Millisecond)
-		if err == nil || !strings.Contains(err.Error(), "hrgw-example") || !strings.Contains(err.Error(), "last phase=Provisioning") {
+		if err == nil || !strings.Contains(err.Error(), "runner-gw-example") || !strings.Contains(err.Error(), "last phase=Provisioning") {
 			t.Fatalf("unexpected polling error: %v", err)
 		}
 	})
@@ -322,9 +322,9 @@ func TestVMCreateNoWaitAndIdempotentReady(t *testing.T) {
 		response string
 	}{
 		{name: "no wait", args: append(append([]string{}, base...), "--no-wait"), status: http.StatusCreated,
-			response: `{"id":"hrgw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`},
+			response: `{"id":"runner-gw-example","phase":"Provisioning","ready":false,"ipAddresses":[]}`},
 		{name: "idempotent ready", args: base, status: http.StatusOK,
-			response: `{"id":"hrgw-example","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`},
+			response: `{"id":"runner-gw-example","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
