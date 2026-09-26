@@ -8,7 +8,8 @@ cluster credentials. [OpenAPI](openapi.yaml) defines the public API.
 ```mermaid
 flowchart LR
     Job[GitHub Actions job] -->|HTTPS + OIDC token| API[Gateway API]
-    API --> Auth[OIDC verifier and repository policy]
+    Shell[Local smoke script] -->|HTTPS + smoke token| API
+    API --> Auth[Token verifier and repository policy]
     API --> Backend[Harvester backend]
     Backend -->|Kubernetes API| Cluster[Harvester cluster]
     Cluster --> VM[VM and VMI objects]
@@ -18,13 +19,15 @@ flowchart LR
 
 ## Request and ownership model
 
-Every resource request passes through the OIDC verifier. It checks the token's
-signature, issuer, audience, time claims, repository ID, runner environment,
-workflow reference, and event name against the configured repository policy.
-The numeric repository ID, run ID, and run attempt identify the owner. Jobs in
-the same run attempt share resources. All runs and attempts of a repository
-share its quota. Each repository policy selects the namespace and allowed
-resource settings.
+Workflow resource requests pass through the OIDC verifier. It checks the
+token's signature, issuer, audience, time claims, repository ID, runner
+environment, workflow reference, and event name against the configured
+repository policy. The optional local smoke credential maps to one configured
+repository policy and the reserved `local-smoke` run identity. A workflow's
+numeric repository ID, run ID, and run attempt identify its owner. Jobs in the
+same run attempt share resources. Local smoke and workflow resources have
+separate owners, while all runs of a repository share its quota. Each
+repository policy selects the namespace and allowed resource settings.
 
 Created VMs, independent volume PVCs, boot disk PVCs, and cloud-init Secrets
 carry labels identifying the gateway, owner, and resource kind. Their annotations

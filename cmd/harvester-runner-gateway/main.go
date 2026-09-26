@@ -37,6 +37,10 @@ func run(path string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	verifier, err := auth.NewLocalSmokeVerifier(auth.NewVerifier(cfg.OIDC.Issuer, cfg.OIDC.Audience), cfg)
+	if err != nil {
+		return err
+	}
 	backend, err := harvester.New(cfg, logger)
 	if err != nil {
 		return err
@@ -54,7 +58,7 @@ func run(path string, logger *slog.Logger) error {
 		logger.Warn("initial expiry cleanup failed", "error", err)
 	}
 	cleanupCancel()
-	api := gateway.NewServer(cfg, auth.NewVerifier(cfg.OIDC.Issuer, cfg.OIDC.Audience), backend)
+	api := gateway.NewServer(cfg, verifier, backend)
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: api.Handler,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,

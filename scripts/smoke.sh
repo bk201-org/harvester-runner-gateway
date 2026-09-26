@@ -1,39 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run only from an explicitly opted-in GitHub Actions job with id-token: write.
-[[ "${GATEWAY_SMOKE:-}" == "1" ]] || { echo 'Set GATEWAY_SMOKE=1 to run the live smoke test' >&2; exit 2; }
-: "${GATEWAY_URL:?Gateway HTTPS URL is required}"
-: "${GATEWAY_IMAGE:?Approved namespace/name image is required}"
-: "${GATEWAY_NETWORK:?Approved namespace/name network is required}"
-: "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC request URL is required}"
-: "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC request token is required}"
+for dependency in curl jq; do
+  command -v "$dependency" >/dev/null || { echo "$dependency is required" >&2; exit 2; }
+done
 
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  [[ "${GATEWAY_SMOKE:-}" == "1" ]] || { echo 'Set GATEWAY_SMOKE=1 to run the live smoke test' >&2; exit 2; }
+  : "${GATEWAY_URL:?Gateway HTTPS URL is required}"
+  : "${GATEWAY_IMAGE:?Approved namespace/name image is required}"
+  : "${GATEWAY_NETWORK:?Approved namespace/name network is required}"
+  : "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC request URL is required}"
+  : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC request token is required}"
+  : "${GITHUB_RUN_ID:?GitHub run ID is required}"
+  : "${GITHUB_RUN_ATTEMPT:?GitHub run attempt is required}"
+  GATEWAY_AUDIENCE=${GATEWAY_AUDIENCE:-api://harvester-runner-gateway}
+  attempt="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+  token() {
+    local encoded
+    encoded=$(printf '%s' "$GATEWAY_AUDIENCE" | jq -sRr @uri)
+    curl --fail --silent --show-error \
+      -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$encoded" | jq -er .value
+  }
+else
+  for dependency in od tr; do
+    command -v "$dependency" >/dev/null || { echo "$dependency is required for local smoke runs" >&2; exit 2; }
+  done
+  config_path=${GATEWAY_SMOKE_CONFIG:-${XDG_CONFIG_HOME:-${HOME:?}/.config}/harvester-runner-gateway/smoke.json}
+  [[ -r "$config_path" ]] || { echo "Cannot read local smoke config: $config_path" >&2; exit 2; }
+
+  config_value() {
+    jq -er --arg key "$1" '.[$key] | select(type == "string" and length > 0)' "$config_path" || {
+      echo "Local smoke config requires $1" >&2
+      exit 2
+    }
+  }
+
+  GATEWAY_URL=$(config_value gatewayURL)
+  GATEWAY_IMAGE=$(config_value image)
+  GATEWAY_NETWORK=$(config_value network)
+  token_file=$(config_value tokenFile)
+  [[ -r "$token_file" ]] || { echo "Cannot read local smoke token file: $token_file" >&2; exit 2; }
+  local_token=$(<"$token_file")
+  [[ "$local_token" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Local smoke token must contain 64 hex characters' >&2; exit 2; }
+  attempt="local-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+
+  token() { printf '%s\n' "$local_token"; }
+fi
+
+[[ "$GATEWAY_URL" == https://* ]] || { echo 'Gateway URL must use HTTPS' >&2; exit 2; }
 GATEWAY_URL=${GATEWAY_URL%/}
-GATEWAY_AUDIENCE=${GATEWAY_AUDIENCE:-api://harvester-runner-gateway}
 GATEWAY_MEMORY=${GATEWAY_MEMORY:-2Gi}
 GATEWAY_BOOT_DISK=${GATEWAY_BOOT_DISK:-20Gi}
 GATEWAY_VOLUME_SIZE=${GATEWAY_VOLUME_SIZE:-1Gi}
-attempt="${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}"
 vm_id=''
 volume_id=''
-
-token() {
-  local encoded
-  encoded=$(printf '%s' "$GATEWAY_AUDIENCE" | jq -sRr @uri)
-  curl --fail --silent --show-error \
-    -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$encoded" | jq -er .value
-}
 
 api() {
   local method=$1 path=$2 body=${3:-} key=${4:-} jwt
   jwt=$(token)
-  local args=(--fail-with-body --silent --show-error -X "$method" \
-    -H "Authorization: Bearer $jwt")
+  local args=(--fail-with-body --silent --show-error -X "$method")
   if [[ -n "$body" ]]; then args+=(-H 'Content-Type: application/json' --data "$body"); fi
   if [[ -n "$key" ]]; then args+=(-H "Idempotency-Key: $key"); fi
-  curl "${args[@]}" "$GATEWAY_URL$path"
+  # Passing the header on stdin keeps the long-lived local token out of curl's argv.
+  printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
+    curl --config - "${args[@]}" "$GATEWAY_URL$path"
 }
 
 cleanup() {

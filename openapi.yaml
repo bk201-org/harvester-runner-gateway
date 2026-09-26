@@ -2,11 +2,12 @@ openapi: 3.0.3
 info:
   title: Harvester Runner Gateway
   version: 1.0.0
-  description: Run-scoped VM and volume operations for approved GitHub Actions jobs.
+  description: Run-scoped VM and volume operations for approved GitHub Actions jobs and local smoke tests.
 servers:
   - url: https://gateway.example.internal:8443
 security:
   - githubOIDC: []
+  - localSmokeToken: []
 paths:
   /healthz:
     get:
@@ -163,6 +164,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: GitHub Actions OIDC JWT for the configured audience.
+    localSmokeToken:
+      type: http
+      scheme: bearer
+      description: Optional local smoke token configured under localSmoke; scoped to one repository policy and reserved run identity.
   parameters:
     VMID:
       name: id

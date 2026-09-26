@@ -6,6 +6,10 @@ kubeconfig: /run/secrets/harvester/kubeconfig
 oidc:
   issuer: https://token.actions.githubusercontent.com
   audience: api://harvester-runner-gateway
+# Optional local smoke access. Keep the token file outside this repository.
+# localSmoke:
+#   repositoryID: "123456789"
+#   tokenFile: /run/secrets/gateway/local-smoke-token
 repositories:
   - repositoryID: "123456789"
     namespace: ci-vms

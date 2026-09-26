@@ -64,9 +64,11 @@ verification.
 
 ## Authentication
 
-Each API call uses `Authorization: Bearer <GitHub OIDC JWT>`. Workflow jobs grant
-`id-token: write` and request the audience configured under `oidc.audience`.
-The gateway verifies the token's issuer, signature, audience, time claims,
+Workflow API calls use `Authorization: Bearer <GitHub OIDC JWT>`. Workflow jobs
+grant `id-token: write` and request the audience configured under
+`oidc.audience`. An optional, separately configured local smoke token is accepted
+only for the repository policy named under `localSmoke.repositoryID`.
+For OIDC, the gateway verifies the token's issuer, signature, audience, time claims,
 repository ID, `self-hosted` runner environment, workflow ref, and event name.
 Workflow refs and event names match exactly; no wildcard policy is supported.
 Only GitHub.com is the default issuer. Jobs in the same repository/run ID/run
@@ -121,13 +123,83 @@ first is detached and then deleted. Deleting a VM does not delete independent
 volumes attached to it. GET status may show no IP address until the VM reports
 one; it does not prove SSH or a guest service is ready.
 
-## Current validation boundary
+## Live smoke test
 
 Unit tests and builds run without a cluster. Live creation, actions, hotplug,
 and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
-before production use. The opt-in [smoke script](scripts/smoke.sh) runs from a
-GitHub Actions job with id-token: write when GATEWAY_SMOKE=1 and the gateway
-URL/image/network environment variables are set. It creates and cleans up a
-VM and volume, and exercises hotplug, power, and reboot. The gateway has no
-deployment manifest because TLS, network reachability, image/network names,
-and RBAC are site-specific.
+before production use. The [smoke script](scripts/smoke.sh) creates a VM and an
+independent volume, exercises hotplug, power, and reboot, and cleans up both.
+It requires `bash`, `curl`, and `jq`; local runs also require `od` and `tr`. Use a
+gateway URL whose certificate is trusted by the machine running the script.
+
+### GitHub Actions
+
+The checked-in [smoke workflow](.github/workflows/smoke.yml) runs only through
+`workflow_dispatch` on the self-hosted `harvester-runners` label. Set repository
+variables `GATEWAY_URL`, `GATEWAY_IMAGE`, and `GATEWAY_NETWORK`; set
+`GATEWAY_AUDIENCE` only if it differs from `api://harvester-runner-gateway`.
+The job sets `GATEWAY_SMOKE=1`, requests an OIDC token with `id-token: write`,
+and runs the script. For a repository at `bk201-org/harvester-runner-gateway` on
+`main`, permit this exact workflow ref and event in the matching gateway
+repository policy:
+
+```yaml
+allowedWorkflowRefs:
+  - bk201-org/harvester-runner-gateway/.github/workflows/smoke.yml@refs/heads/main
+allowedEvents:
+  - workflow_dispatch
+```
+
+Use the actual repository slug and branch if they differ. Once the workflow is
+on the GitHub default branch, run it through the Actions tab or
+`gh workflow run smoke.yml --ref main`.
+
+### Local shell
+
+Local invocation needs a one-time, opt-in `localSmoke` credential on the
+**existing gateway**. Generate 32 random bytes as hex and store them in a
+private file readable by the gateway process, outside the repository:
+
+```sh
+umask 077
+openssl rand -hex 32 > /secure/path/local-smoke-token
+```
+
+Point the gateway configuration at that file and an existing repository policy
+ID, then restart the gateway. The selected policy still controls namespace,
+allowed images and networks, size limits, and quota. Local resources use the
+reserved `local-smoke` run identity, so workflow runs cannot access them; local
+runs and workflow runs still share that repository's quota.
+
+```yaml
+localSmoke:
+  repositoryID: "123456789"
+  tokenFile: /secure/path/local-smoke-token
+```
+
+Copy the same token to a private file on your workstation. Create
+`~/.config/harvester-runner-gateway/smoke.json` with these fields, using
+absolute paths and your approved image and network:
+
+```json
+{
+  "gatewayURL": "https://gateway.example.internal:8443",
+  "image": "default/ubuntu-24-04",
+  "network": "default/vm-network",
+  "tokenFile": "/home/you/.config/harvester-runner-gateway/local-smoke-token"
+}
+```
+
+Keep the token file readable only by its owner (`chmod 600`). It is a bearer
+credential for smoke resources under the selected policy; never commit it or
+put it in GitHub variables or artifacts. Restart the gateway after replacing
+its token file to rotate the credential. Then run:
+
+```sh
+./scripts/smoke.sh
+```
+
+Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another local
+configuration. The direct shell run does not need `GATEWAY_SMOKE=1`; running the
+script is the explicit opt-in. The gateway has no deployment manifest because
+TLS, network reachability, image/network names, and RBAC are site-specific.

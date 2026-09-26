@@ -135,12 +135,12 @@ func (s *Server) authorize(next action) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "GitHub OIDC bearer token required")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer token required")
 			return
 		}
 		owner, policy, err := s.verifier.Verify(r.Context(), strings.TrimPrefix(header, "Bearer "), s.cfg)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "OIDC token rejected")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer token rejected")
 			return
 		}
 		next(w, r, owner, policy)

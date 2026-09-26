@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -416,5 +419,46 @@ func TestLegacyResourceIDRetry(t *testing.T) {
 	}
 	if len(backend.vms) != 1 || len(backend.volumes) != 1 {
 		t.Fatalf("retry created a duplicate: %d VMs, %d volumes", len(backend.vms), len(backend.volumes))
+	}
+}
+
+func TestLocalSmokeResourcesStaySeparateFromWorkflowRun(t *testing.T) {
+	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci",
+		Images: []string{"default/ubuntu"}, Networks: []string{"default/network"},
+		MaxCPU: 4, MaxMemory: "8Gi", MaxBootDiskSize: "40Gi", MaxVolumeSize: "100Gi",
+		Quota: config.QuotaPolicy{MaxActiveVMs: 2, MaxActiveVolumes: 2}}
+	token := strings.Repeat("ab", 32)
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Repositories: []config.RepositoryPolicy{policy},
+		LocalSmoke: config.LocalSmokeConfig{RepositoryID: "123", TokenFile: path}}
+	verifier, err := auth.NewLocalSmokeVerifier(fakeVerifier{}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(cfg, verifier, newFakeBackend())
+	local := doRequest(s, http.MethodPost, "/v1/vms", token, "local-vm", vmRequest())
+	workflow := doRequest(s, http.MethodPost, "/v1/vms", "run-one", "workflow-vm", vmRequest())
+	if local.Code != http.StatusCreated || workflow.Code != http.StatusCreated {
+		t.Fatalf("create local=%d workflow=%d", local.Code, workflow.Code)
+	}
+	var localVM, workflowVM VMStatus
+	if err := json.Unmarshal(local.Body.Bytes(), &localVM); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(workflow.Body.Bytes(), &workflowVM); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ id, caller string }{
+		{localVM.ID, "run-one"}, {workflowVM.ID, token},
+	} {
+		if got := doRequest(s, http.MethodGet, "/v1/vms/"+tc.id, tc.caller, "", nil); got.Code != http.StatusNotFound {
+			t.Fatalf("cross-owner read of %s returned %d", tc.id, got.Code)
+		}
+	}
+	if got := doRequest(s, http.MethodGet, "/v1/vms/"+localVM.ID, token, "", nil); got.Code != http.StatusOK {
+		t.Fatalf("local owner cannot read its VM: %d", got.Code)
 	}
 }

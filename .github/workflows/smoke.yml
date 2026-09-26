@@ -1,0 +1,21 @@
+name: Gateway smoke test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, harvester-runners]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GATEWAY_SMOKE: "1"
+      GATEWAY_URL: ${{ vars.GATEWAY_URL }}
+      GATEWAY_IMAGE: ${{ vars.GATEWAY_IMAGE }}
+      GATEWAY_NETWORK: ${{ vars.GATEWAY_NETWORK }}
+      GATEWAY_AUDIENCE: ${{ vars.GATEWAY_AUDIENCE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise gateway VM and volume lifecycle
+        run: ./scripts/smoke.sh

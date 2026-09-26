@@ -28,6 +28,7 @@ type Config struct {
 	Kubeconfig    string             `json:"kubeconfig"`
 	KubeContext   string             `json:"kubeContext"`
 	OIDC          OIDCConfig         `json:"oidc"`
+	LocalSmoke    LocalSmokeConfig   `json:"localSmoke"`
 	Repositories  []RepositoryPolicy `json:"repositories"`
 }
 
@@ -39,6 +40,11 @@ type TLSConfig struct {
 type OIDCConfig struct {
 	Issuer   string `json:"issuer"`
 	Audience string `json:"audience"`
+}
+
+type LocalSmokeConfig struct {
+	RepositoryID string `json:"repositoryID"`
+	TokenFile    string `json:"tokenFile"`
 }
 
 type QuotaPolicy struct {
@@ -131,6 +137,14 @@ func (c *Config) Validate() error {
 			if err != nil || quantity.Sign() <= 0 {
 				return fmt.Errorf("repository %s: invalid %s %q", p.RepositoryID, name, value)
 			}
+		}
+	}
+	if c.LocalSmoke.RepositoryID != "" || c.LocalSmoke.TokenFile != "" {
+		if c.LocalSmoke.RepositoryID == "" || c.LocalSmoke.TokenFile == "" {
+			return fmt.Errorf("localSmoke.repositoryID and localSmoke.tokenFile must be set together")
+		}
+		if _, ok := c.Repository(c.LocalSmoke.RepositoryID); !ok {
+			return fmt.Errorf("localSmoke.repositoryID must match a configured repository")
 		}
 	}
 	return nil
