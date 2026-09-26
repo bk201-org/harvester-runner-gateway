@@ -27,7 +27,7 @@ func main() {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(*path, logger); err != nil {
-		logger.Error("gateway stopped", "error", err)
+		logger.Error("gateway failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -37,6 +37,7 @@ func run(path string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	logger.Info("configuration loaded", "listen_address", cfg.ListenAddress, "repositories", len(cfg.Repositories))
 	verifier, err := auth.NewLocalSmokeVerifier(auth.NewVerifier(cfg.OIDC.Issuer, cfg.OIDC.Audience), cfg)
 	if err != nil {
 		return err
@@ -53,7 +54,8 @@ func run(path string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("Harvester preflight: %w", err)
 	}
-	api := gateway.NewServer(cfg, verifier, backend)
+	logger.Info("Harvester preflight completed")
+	api := gateway.NewServerWithLogger(cfg, verifier, backend, logger)
 	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 45*time.Second)
 	err = api.RecoverAllocations(recoveryCtx)
 	recoveryCancel()
@@ -61,10 +63,13 @@ func run(path string, logger *slog.Logger) error {
 		return fmt.Errorf("recover allocations: %w", err)
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 45*time.Second)
-	if err := api.CleanupExpired(cleanupCtx, time.Now()); err != nil {
-		logger.Warn("initial expiry cleanup failed", "error", err)
-	}
+	cleanupErr := api.CleanupExpired(cleanupCtx, time.Now())
 	cleanupCancel()
+	if cleanupErr != nil {
+		logger.Warn("initial expiry cleanup failed", "error", cleanupErr)
+	} else {
+		logger.Info("initial expiry cleanup completed")
+	}
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: api.Handler,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,
@@ -90,9 +95,14 @@ func run(path string, logger *slog.Logger) error {
 	logger.Info("gateway listening", "address", cfg.ListenAddress)
 	select {
 	case <-ctx.Done():
+		logger.Info("shutdown requested")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		return server.Shutdown(shutdownCtx)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		logger.Info("gateway stopped")
+		return nil
 	case err := <-errCh:
 		if err == http.ErrServerClosed {
 			return nil

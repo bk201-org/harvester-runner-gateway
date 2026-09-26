@@ -63,6 +63,19 @@ certificate is self-signed, so each runner must trust it before its HTTPS
 client can call the gateway. Do not commit the private key or disable TLS
 verification.
 
+## Logging
+
+The server writes structured JSON logs to stdout. Startup, preflight, allocation
+recovery, expiry cleanup, resource mutations, shutdown, and every HTTP response
+are logged. Request completion entries include the method, URL path, status,
+response size, and duration. Client errors use `WARN`; server and Harvester
+errors use `ERROR`. Resource events include the namespace, resource ID, and
+GitHub repository/run ownership fields.
+
+Authorization headers, idempotency keys, request bodies, SSH public keys, and
+cloud-init data are never logged. Collect stdout with the service manager or
+container runtime used to run the gateway.
+
 ## Client CLI
 
 `make build` builds both the server and `bin/hvst-runner-gw-client`.

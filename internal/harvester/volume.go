@@ -375,6 +375,9 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 			owner := parseOwner(vm.GetLabels())
 			if err := b.DeleteVM(ctx, policy, owner, vm.GetName()); err != nil && !isMissing(err) {
 				problems = append(problems, fmt.Errorf("delete expired VM %s: %w", vm.GetName(), err))
+			} else if err == nil && b.logger != nil {
+				b.logger.InfoContext(ctx, "expired resource cleanup requested", "resource_type", "vm",
+					"resource_id", vm.GetName(), "namespace", policy.Namespace)
 			}
 		}
 		volumes, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
@@ -404,6 +407,9 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 				if attached != "" {
 					if err := b.DetachVolume(ctx, policy, owner, attached, pvc.Name); err != nil && !isMissing(err) {
 						problems = append(problems, err)
+					} else if err == nil && b.logger != nil {
+						b.logger.InfoContext(ctx, "expired volume detach requested", "resource_id", pvc.Name,
+							"vm_id", attached, "namespace", policy.Namespace)
 					}
 					continue
 				}
@@ -426,6 +432,9 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 			}
 			if err := deleteIgnoringMissing(b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Delete(ctx, pvc.Name, metav1.DeleteOptions{})); err != nil {
 				problems = append(problems, err)
+			} else if b.logger != nil {
+				b.logger.InfoContext(ctx, "expired resource deleted", "resource_type", kind,
+					"resource_id", pvc.Name, "namespace", policy.Namespace)
 			}
 		}
 		secrets, err := b.kube.CoreV1().Secrets(policy.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
@@ -450,6 +459,9 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 				}
 				if err := deleteIgnoringMissing(b.kube.CoreV1().Secrets(policy.Namespace).Delete(ctx, item.Name, metav1.DeleteOptions{})); err != nil {
 					problems = append(problems, err)
+				} else if b.logger != nil {
+					b.logger.InfoContext(ctx, "expired resource deleted", "resource_type", "cloud-init",
+						"resource_id", item.Name, "namespace", policy.Namespace)
 				}
 			}
 		}

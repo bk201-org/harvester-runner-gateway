@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -94,17 +95,24 @@ type Server struct {
 	cfg       config.Config
 	verifier  TokenVerifier
 	backend   Backend
+	logger    *slog.Logger
 	opGate    chan struct{}
 	allocator *allocator
 	Handler   http.Handler
 }
 
 func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Server {
-	s := &Server{cfg: cfg, verifier: verifier, backend: backend, opGate: make(chan struct{}, 1), allocator: newAllocator()}
+	return NewServerWithLogger(cfg, verifier, backend, nil)
+}
+
+func NewServerWithLogger(cfg config.Config, verifier TokenVerifier, backend Backend, logger *slog.Logger) *Server {
+	s := &Server{cfg: cfg, verifier: verifier, backend: backend, logger: normalizeLogger(logger),
+		opGate: make(chan struct{}, 1), allocator: newAllocator()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := backend.Ping(r.Context()); err != nil {
+			s.logger.ErrorContext(r.Context(), "readiness check failed", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "cluster_unavailable", "Harvester API is unavailable")
 			return
 		}
@@ -123,7 +131,7 @@ func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Serv
 	mux.HandleFunc("POST /v1/volumes", s.authorize(s.createVolume))
 	mux.HandleFunc("GET /v1/volumes/{id}", s.authorize(s.getVolume))
 	mux.HandleFunc("DELETE /v1/volumes/{id}", s.authorize(s.deleteVolume))
-	s.Handler = mux
+	s.Handler = s.logRequests(mux)
 	return s
 }
 
@@ -139,7 +147,11 @@ func (s *Server) RecoverAllocations(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.allocator.recover(observations)
+	if err := s.allocator.recover(observations); err != nil {
+		return err
+	}
+	s.logger.InfoContext(ctx, "allocation state recovered", "observations", len(observations))
+	return nil
 }
 
 func (s *Server) CleanupExpired(ctx context.Context, now time.Time) error {
@@ -168,7 +180,7 @@ func (s *Server) beginOperation(parent context.Context) (context.Context, func()
 func (s *Server) beginRequestOperation(w http.ResponseWriter, r *http.Request) (*http.Request, func(), bool) {
 	ctx, finish, err := s.beginOperation(r.Context())
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return nil, nil, false
 	}
 	return r.WithContext(ctx), finish, true
@@ -195,12 +207,12 @@ func (s *Server) authorize(next action) http.HandlerFunc {
 func (s *Server) quota(w http.ResponseWriter, r *http.Request, _ auth.Owner, policy config.RepositoryPolicy) {
 	vms, err := s.backend.CountVMs(r.Context(), policy)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	volumes, err := s.backend.CountVolumes(r.Context(), policy)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{
@@ -212,7 +224,7 @@ func (s *Server) quota(w http.ResponseWriter, r *http.Request, _ auth.Owner, pol
 func (s *Server) listVMs(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
 	items, err := s.backend.ListVMs(r.Context(), policy, owner)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -221,7 +233,7 @@ func (s *Server) listVMs(w http.ResponseWriter, r *http.Request, owner auth.Owne
 func (s *Server) getVM(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
 	item, err := s.backend.GetVM(r.Context(), policy, owner, r.PathValue("id"))
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -257,17 +269,17 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 			writeJSON(w, http.StatusOK, existing)
 			return
 		} else if !errors.Is(err, ErrNotFound) {
-			backendError(w, err)
+			s.backendError(w, r, err)
 			return
 		}
 	}
 	if err := s.backend.ValidateVM(r.Context(), policy, req); err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	count, err := s.backend.CountVMs(r.Context(), policy)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	if count >= policy.Quota.MaxActiveVMs {
@@ -277,7 +289,7 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 	if !mapped {
 		id, err = s.allocator.reserve(policy.Namespace, owner, "vm", identity)
 		if err != nil {
-			backendError(w, err)
+			s.backendError(w, r, err)
 			return
 		}
 	}
@@ -285,9 +297,10 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 	item, err := s.backend.CreateVM(r.Context(), policy, owner, id, req,
 		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), metadata)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "create", "vm", id, owner, policy, slog.Time("expires_at", item.ExpiresAt))
 	w.Header().Set("Location", "/v1/vms/"+id)
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -298,10 +311,12 @@ func (s *Server) deleteVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		return
 	}
 	defer finish()
-	if err := s.backend.DeleteVM(r.Context(), policy, owner, r.PathValue("id")); err != nil {
-		backendError(w, err)
+	id := r.PathValue("id")
+	if err := s.backend.DeleteVM(r.Context(), policy, owner, id); err != nil {
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "delete", "vm", id, owner, policy)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -321,10 +336,12 @@ func (s *Server) powerVM(w http.ResponseWriter, r *http.Request, owner auth.Owne
 		return
 	}
 	defer finish()
-	if err := s.backend.PowerVM(r.Context(), policy, owner, r.PathValue("id"), req.State); err != nil {
-		backendError(w, err)
+	id := r.PathValue("id")
+	if err := s.backend.PowerVM(r.Context(), policy, owner, id, req.State); err != nil {
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "power", "vm", id, owner, policy, slog.String("state", req.State))
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -334,17 +351,19 @@ func (s *Server) rebootVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		return
 	}
 	defer finish()
-	if err := s.backend.RebootVM(r.Context(), policy, owner, r.PathValue("id")); err != nil {
-		backendError(w, err)
+	id := r.PathValue("id")
+	if err := s.backend.RebootVM(r.Context(), policy, owner, id); err != nil {
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "reboot", "vm", id, owner, policy)
 	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
 	items, err := s.backend.ListVolumes(r.Context(), policy, owner)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -353,7 +372,7 @@ func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request, owner auth.
 func (s *Server) getVolume(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
 	item, err := s.backend.GetVolume(r.Context(), policy, owner, r.PathValue("id"))
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -389,13 +408,13 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 			writeJSON(w, http.StatusOK, existing)
 			return
 		} else if !errors.Is(err, ErrNotFound) {
-			backendError(w, err)
+			s.backendError(w, r, err)
 			return
 		}
 	}
 	count, err := s.backend.CountVolumes(r.Context(), policy)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
 	if count >= policy.Quota.MaxActiveVolumes {
@@ -405,7 +424,7 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 	if !mapped {
 		id, err = s.allocator.reserve(policy.Namespace, owner, "volume", identity)
 		if err != nil {
-			backendError(w, err)
+			s.backendError(w, r, err)
 			return
 		}
 	}
@@ -413,9 +432,10 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 	item, err := s.backend.CreateVolume(r.Context(), policy, owner, id, req,
 		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), metadata)
 	if err != nil {
-		backendError(w, err)
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "create", "volume", id, owner, policy, slog.Time("expires_at", item.ExpiresAt))
 	w.Header().Set("Location", "/v1/volumes/"+id)
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -426,10 +446,12 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request, owner auth
 		return
 	}
 	defer finish()
-	if err := s.backend.DeleteVolume(r.Context(), policy, owner, r.PathValue("id")); err != nil {
-		backendError(w, err)
+	id := r.PathValue("id")
+	if err := s.backend.DeleteVolume(r.Context(), policy, owner, id); err != nil {
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "delete", "volume", id, owner, policy)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -439,10 +461,12 @@ func (s *Server) attachVolume(w http.ResponseWriter, r *http.Request, owner auth
 		return
 	}
 	defer finish()
-	if err := s.backend.AttachVolume(r.Context(), policy, owner, r.PathValue("id"), r.PathValue("volumeID")); err != nil {
-		backendError(w, err)
+	vmID, volumeID := r.PathValue("id"), r.PathValue("volumeID")
+	if err := s.backend.AttachVolume(r.Context(), policy, owner, vmID, volumeID); err != nil {
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "attach", "volume", volumeID, owner, policy, slog.String("vm_id", vmID))
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -452,10 +476,12 @@ func (s *Server) detachVolume(w http.ResponseWriter, r *http.Request, owner auth
 		return
 	}
 	defer finish()
-	if err := s.backend.DetachVolume(r.Context(), policy, owner, r.PathValue("id"), r.PathValue("volumeID")); err != nil {
-		backendError(w, err)
+	vmID, volumeID := r.PathValue("id"), r.PathValue("volumeID")
+	if err := s.backend.DetachVolume(r.Context(), policy, owner, vmID, volumeID); err != nil {
+		s.backendError(w, r, err)
 		return
 	}
+	s.logResourceEvent(r.Context(), "detach", "volume", volumeID, owner, policy, slog.String("vm_id", vmID))
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -544,7 +570,14 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]string{"code": code, "message": message})
 }
 
-func backendError(w http.ResponseWriter, err error) {
+func (s *Server) backendError(w http.ResponseWriter, r *http.Request, err error) {
+	level := slog.LevelWarn
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		(!errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrInvalid)) {
+		level = slog.LevelError
+	}
+	s.logger.LogAttrs(r.Context(), level, "backend operation failed", slog.String("method", r.Method),
+		slog.String("path", r.URL.Path), slog.Any("error", err))
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		writeError(w, http.StatusGatewayTimeout, "cluster_timeout", "Harvester operation timed out")
