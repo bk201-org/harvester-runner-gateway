@@ -138,6 +138,8 @@ The checked-in [smoke workflow](.github/workflows/smoke.yml) runs only through
 `workflow_dispatch` on the self-hosted `harvester-runners` label. Set repository
 variables `GATEWAY_URL`, `GATEWAY_IMAGE`, and `GATEWAY_NETWORK`; set
 `GATEWAY_AUDIENCE` only if it differs from `api://harvester-runner-gateway`.
+If the gateway uses a self-signed certificate, install its PEM certificate on
+the runner and set `GATEWAY_CA_CERT` to its absolute path.
 The job sets `GATEWAY_SMOKE=1`, requests an OIDC token with `id-token: write`,
 and runs the script. For a repository at `bk201-org/harvester-runner-gateway` on
 `main`, permit this exact workflow ref and event in the matching gateway
@@ -186,9 +188,14 @@ absolute paths and your approved image and network:
   "gatewayURL": "https://gateway.example.internal:8443",
   "image": "default/ubuntu-24-04",
   "network": "default/vm-network",
-  "tokenFile": "/home/you/.config/harvester-runner-gateway/local-smoke-token"
+  "tokenFile": "/home/you/.config/harvester-runner-gateway/local-smoke-token",
+  "caCert": "/home/you/.config/harvester-runner-gateway/gateway.crt"
 }
 ```
+
+`caCert` is optional. Set it to the self-signed gateway certificate or the PEM
+CA certificate that signed the gateway certificate. The certificate must match
+the hostname in `gatewayURL`; the script keeps TLS verification enabled.
 
 Keep the token file readable only by its owner (`chmod 600`). It is a bearer
 credential for smoke resources under the selected policy; never commit it or

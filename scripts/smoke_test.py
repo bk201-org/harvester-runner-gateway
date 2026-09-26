@@ -32,9 +32,11 @@ match = re.search(r'header = "Authorization: Bearer ([^"]+)"', config)
 auth = match.group(1) if match else ""
 key = next((h.removeprefix("Idempotency-Key: ") for h in headers
             if h.startswith("Idempotency-Key: ")), "")
+cacert = args[args.index("--cacert") + 1] if "--cacert" in args else ""
 path = urlparse(url).path
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
-    log.write(json.dumps({"method": method, "path": path, "auth": auth, "key": key}) + "\n")
+    log.write(json.dumps({"method": method, "path": path, "auth": auth,
+                          "key": key, "cacert": cacert}) + "\n")
 
 state_path = Path(os.environ["FAKE_STATE"])
 state = json.loads(state_path.read_text()) if state_path.exists() else {"power": "on"}
@@ -43,7 +45,9 @@ if method == "PUT" and path.endswith("/power"):
     state["power"] = json.loads(body)["state"]
     state_path.write_text(json.dumps(state))
 if os.environ.get("FAKE_FAIL_ATTACH") == "1" and method == "PUT" and "/volumes/" in path:
-    print("simulated attach failure", file=sys.stderr)
+    print(json.dumps({"code": "invalid_resource",
+                      "message": "simulated attach failure"}))
+    print("simulated curl failure", file=sys.stderr)
     sys.exit(22)
 if method == "POST" and path == "/v1/vms":
     print(json.dumps({"id": "hrgw-vm"}))
@@ -70,17 +74,18 @@ class SmokeScriptTest(unittest.TestCase):
         token_file = root / "token"
         token_file.write_text(TOKEN + "\n")
         token_file.chmod(0o600)
-        config = root / "smoke.json"
-        config.write_text(json.dumps({
+        self.config = root / "smoke.json"
+        self.config_value = {
             "gatewayURL": "https://gateway.example.test",
             "image": "default/ubuntu",
             "network": "default/network",
             "tokenFile": str(token_file),
-        }))
+        }
+        self.config.write_text(json.dumps(self.config_value))
         self.env = os.environ.copy()
         self.env.update({
             "PATH": str(bin_dir) + os.pathsep + self.env["PATH"],
-            "GATEWAY_SMOKE_CONFIG": str(config),
+            "GATEWAY_SMOKE_CONFIG": str(self.config),
             "FAKE_LOG": str(self.log),
             "FAKE_STATE": str(root / "state.json"),
         })
@@ -109,12 +114,15 @@ class SmokeScriptTest(unittest.TestCase):
         self.assertTrue(all(key.startswith("local-") for key in keys))
 
     def test_actions_run_uses_oidc_and_opt_in(self):
+        ca_cert = Path(self.temp.name) / "gateway-ca.crt"
+        ca_cert.write_text("test certificate")
         env = {
             "GITHUB_ACTIONS": "true",
             "GATEWAY_SMOKE": "1",
             "GATEWAY_URL": "https://gateway.example.test",
             "GATEWAY_IMAGE": "default/ubuntu",
             "GATEWAY_NETWORK": "default/network",
+            "GATEWAY_CA_CERT": str(ca_cert),
             "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.example/token?request=1",
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token",
             "GITHUB_RUN_ID": "123",
@@ -125,6 +133,7 @@ class SmokeScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         requests = self.requests()
         self.assertTrue(all(item["auth"] == "oidc-token" for item in requests))
+        self.assertTrue(all(item["cacert"] == str(ca_cert) for item in requests))
         self.assertIn("123-2-vm", [item["key"] for item in requests])
         self.log.unlink()
         env["GATEWAY_SMOKE"] = "0"
@@ -132,9 +141,21 @@ class SmokeScriptTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.log.exists(), "unapproved Actions run called the gateway")
 
+    def test_local_run_uses_self_signed_certificate(self):
+        ca_cert = Path(self.temp.name) / "gateway-ca.crt"
+        ca_cert.write_text("test certificate")
+        self.config_value["caCert"] = str(ca_cert)
+        self.config.write_text(json.dumps(self.config_value))
+
+        result = self.run_smoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(item["cacert"] == str(ca_cert)
+                            for item in self.requests()))
+
     def test_failure_cleans_up_created_resources(self):
         result = self.run_smoke(FAKE_FAIL_ATTACH="1")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn('"message": "simulated attach failure"', result.stderr)
         requests = self.requests()
         self.assertIn(("DELETE", "/v1/volumes/hrgw-volume"),
                       [(item["method"], item["path"]) for item in requests])

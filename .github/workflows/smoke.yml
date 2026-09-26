@@ -15,6 +15,7 @@ jobs:
       GATEWAY_IMAGE: ${{ vars.GATEWAY_IMAGE }}
       GATEWAY_NETWORK: ${{ vars.GATEWAY_NETWORK }}
       GATEWAY_AUDIENCE: ${{ vars.GATEWAY_AUDIENCE }}
+      GATEWAY_CA_CERT: ${{ vars.GATEWAY_CA_CERT }}
     steps:
       - uses: actions/checkout@v4
       - name: Exercise gateway VM and volume lifecycle

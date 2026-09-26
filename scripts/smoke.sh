@@ -15,6 +15,7 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   : "${GITHUB_RUN_ID:?GitHub run ID is required}"
   : "${GITHUB_RUN_ATTEMPT:?GitHub run attempt is required}"
   GATEWAY_AUDIENCE=${GATEWAY_AUDIENCE:-api://harvester-runner-gateway}
+  GATEWAY_CA_CERT=${GATEWAY_CA_CERT:-}
   attempt="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
   token() {
@@ -38,10 +39,20 @@ else
     }
   }
 
+  config_optional_value() {
+    jq -er --arg key "$1" \
+      'if has($key) then .[$key] | select(type == "string" and length > 0) else "" end' \
+      "$config_path" || {
+      echo "Local smoke config has invalid $1" >&2
+      exit 2
+    }
+  }
+
   GATEWAY_URL=$(config_value gatewayURL)
   GATEWAY_IMAGE=$(config_value image)
   GATEWAY_NETWORK=$(config_value network)
   token_file=$(config_value tokenFile)
+  GATEWAY_CA_CERT=$(config_optional_value caCert)
   [[ -r "$token_file" ]] || { echo "Cannot read local smoke token file: $token_file" >&2; exit 2; }
   local_token=$(<"$token_file")
   [[ "$local_token" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Local smoke token must contain 64 hex characters' >&2; exit 2; }
@@ -51,6 +62,12 @@ else
 fi
 
 [[ "$GATEWAY_URL" == https://* ]] || { echo 'Gateway URL must use HTTPS' >&2; exit 2; }
+if [[ -n "$GATEWAY_CA_CERT" ]]; then
+  [[ -r "$GATEWAY_CA_CERT" ]] || { echo "Cannot read gateway CA certificate: $GATEWAY_CA_CERT" >&2; exit 2; }
+  gateway_tls_args=(--cacert "$GATEWAY_CA_CERT")
+else
+  gateway_tls_args=()
+fi
 GATEWAY_URL=${GATEWAY_URL%/}
 GATEWAY_MEMORY=${GATEWAY_MEMORY:-2Gi}
 GATEWAY_BOOT_DISK=${GATEWAY_BOOT_DISK:-20Gi}
@@ -59,14 +76,20 @@ vm_id=''
 volume_id=''
 
 api() {
-  local method=$1 path=$2 body=${3:-} key=${4:-} jwt
+  local method=$1 path=$2 body=${3:-} key=${4:-} jwt response curl_status
   jwt=$(token)
   local args=(--fail-with-body --silent --show-error -X "$method")
   if [[ -n "$body" ]]; then args+=(-H 'Content-Type: application/json' --data "$body"); fi
   if [[ -n "$key" ]]; then args+=(-H "Idempotency-Key: $key"); fi
   # Passing the header on stdin keeps the long-lived local token out of curl's argv.
-  printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
-    curl --config - "${args[@]}" "$GATEWAY_URL$path"
+  if response=$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
+    curl "${gateway_tls_args[@]}" --config - "${args[@]}" "$GATEWAY_URL$path"); then
+    printf '%s' "$response"
+  else
+    curl_status=$?
+    [[ -z "$response" ]] || printf '%s\n' "$response" >&2
+    return "$curl_status"
+  fi
 }
 
 cleanup() {
