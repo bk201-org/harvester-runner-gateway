@@ -169,16 +169,22 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 	}
 	vm, err := buildVM(policy.Namespace, id, req, storageClass, labels, values)
 	if err != nil {
-		_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(context.WithoutCancel(ctx), secretName, metav1.DeleteOptions{})
+		rollbackCtx, cancel := rollbackContext(ctx)
+		_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(rollbackCtx, secretName, metav1.DeleteOptions{})
+		cancel()
 		return gateway.VMStatus{}, err
 	}
 	created, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Create(ctx, vm, metav1.CreateOptions{})
 	if err != nil {
-		_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(context.WithoutCancel(ctx), secretName, metav1.DeleteOptions{})
+		rollbackCtx, cancel := rollbackContext(ctx)
+		_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(rollbackCtx, secretName, metav1.DeleteOptions{})
+		cancel()
 		return gateway.VMStatus{}, translate(err)
 	}
 	if err := b.subresource(ctx, policy.Namespace, id, "start", map[string]any{}); err != nil {
-		_ = b.DeleteVM(context.WithoutCancel(ctx), policy, owner, id)
+		rollbackCtx, cancel := rollbackContext(ctx)
+		_ = b.DeleteVM(rollbackCtx, policy, owner, id)
+		cancel()
 		return gateway.VMStatus{}, fmt.Errorf("start VM: %w", err)
 	}
 	return b.vmStatus(ctx, policy.Namespace, created)

@@ -1,13 +1,83 @@
 package harvester
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
+	kubefake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
+
+func TestPendingAndLiveAttachmentsPreventVolumeDeletion(t *testing.T) {
+	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
+	policy := config.RepositoryPolicy{Namespace: "ci"}
+	newVolume := func() *corev1.PersistentVolumeClaim {
+		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: "hrgw-volume", Namespace: "ci", Labels: ownerLabels(owner, "volume"),
+			Annotations: annotations(time.Now().Add(time.Hour), "hash"),
+		}}
+	}
+	tests := []struct {
+		name   string
+		object *unstructured.Unstructured
+	}{
+		{
+			name: "pending VM request",
+			object: &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
+				"metadata": map[string]any{"name": "hrgw-vm", "namespace": "ci"},
+				"status": map[string]any{"volumeRequests": []any{map[string]any{
+					"addVolumeOptions": map[string]any{
+						"name": "hrgw-volume",
+						"volumeSource": map[string]any{"persistentVolumeClaim": map[string]any{
+							"claimName": "hrgw-volume",
+						}},
+					},
+				}}},
+			}},
+		},
+		{
+			name: "live VMI attachment",
+			object: &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachineInstance",
+				"metadata": map[string]any{"name": "hrgw-vm", "namespace": "ci"},
+				"spec": map[string]any{"volumes": []any{map[string]any{
+					"name": "hrgw-volume", "persistentVolumeClaim": map[string]any{
+						"claimName": "hrgw-volume",
+					},
+				}}},
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(
+				runtime.NewScheme(),
+				map[schema.GroupVersionResource]string{
+					vmGVR: "VirtualMachineList", vmiGVR: "VirtualMachineInstanceList",
+				},
+				test.object,
+			)
+			kube := kubefake.NewClientset(newVolume())
+			backend := &Backend{dynamic: dynamicClient, kube: kube}
+			err := backend.DeleteVolume(context.Background(), policy, owner, "hrgw-volume")
+			if !errors.Is(err, gateway.ErrConflict) {
+				t.Fatalf("attached volume deletion returned %v, want conflict", err)
+			}
+		})
+	}
+}
 
 func TestOfflineDetachPreservesRootDisk(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}

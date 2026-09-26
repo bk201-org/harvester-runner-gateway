@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -26,6 +25,8 @@ var (
 	ErrConflict = errors.New("resource conflict")
 	ErrInvalid  = errors.New("invalid resource")
 )
+
+const operationTimeout = 25 * time.Second
 
 type VMRequest struct {
 	Image         string   `json:"image"`
@@ -91,12 +92,12 @@ type Server struct {
 	cfg      config.Config
 	verifier TokenVerifier
 	backend  Backend
-	opMu     sync.Mutex
+	opGate   chan struct{}
 	Handler  http.Handler
 }
 
 func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Server {
-	s := &Server{cfg: cfg, verifier: verifier, backend: backend}
+	s := &Server{cfg: cfg, verifier: verifier, backend: backend, opGate: make(chan struct{}, 1)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -124,9 +125,35 @@ func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Serv
 }
 
 func (s *Server) CleanupExpired(ctx context.Context, now time.Time) error {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	ctx, finish, err := s.beginOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
 	return s.backend.CleanupExpired(ctx, now)
+}
+
+func (s *Server) beginOperation(parent context.Context) (context.Context, func(), error) {
+	ctx, cancel := context.WithTimeout(parent, operationTimeout)
+	select {
+	case s.opGate <- struct{}{}:
+		return ctx, func() {
+			<-s.opGate
+			cancel()
+		}, nil
+	case <-ctx.Done():
+		cancel()
+		return nil, nil, ctx.Err()
+	}
+}
+
+func (s *Server) beginRequestOperation(w http.ResponseWriter, r *http.Request) (*http.Request, func(), bool) {
+	ctx, finish, err := s.beginOperation(r.Context())
+	if err != nil {
+		backendError(w, err)
+		return nil, nil, false
+	}
+	return r.WithContext(ctx), finish, true
 }
 
 type action func(http.ResponseWriter, *http.Request, auth.Owner, config.RepositoryPolicy)
@@ -196,8 +223,11 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		return
 	}
 	id, digest := resourceIdentity(owner, "vm", key, req)
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	for _, candidate := range []string{id, legacyResourceID(owner, "vm", key)} {
 		if existing, err := s.backend.GetVM(r.Context(), policy, owner, candidate); err == nil {
 			if existing.RequestHash != digest {
@@ -230,8 +260,11 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 }
 
 func (s *Server) deleteVM(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	if err := s.backend.DeleteVM(r.Context(), policy, owner, r.PathValue("id")); err != nil {
 		backendError(w, err)
 		return
@@ -240,8 +273,6 @@ func (s *Server) deleteVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 }
 
 func (s *Server) powerVM(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
 	var req struct {
 		State string `json:"state"`
 	}
@@ -252,6 +283,11 @@ func (s *Server) powerVM(w http.ResponseWriter, r *http.Request, owner auth.Owne
 		writeError(w, http.StatusUnprocessableEntity, "invalid_request", "state must be on or off")
 		return
 	}
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	if err := s.backend.PowerVM(r.Context(), policy, owner, r.PathValue("id"), req.State); err != nil {
 		backendError(w, err)
 		return
@@ -260,8 +296,11 @@ func (s *Server) powerVM(w http.ResponseWriter, r *http.Request, owner auth.Owne
 }
 
 func (s *Server) rebootVM(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	if err := s.backend.RebootVM(r.Context(), policy, owner, r.PathValue("id")); err != nil {
 		backendError(w, err)
 		return
@@ -301,8 +340,11 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		return
 	}
 	id, digest := resourceIdentity(owner, "volume", key, req)
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	for _, candidate := range []string{id, legacyResourceID(owner, "volume", key)} {
 		if existing, err := s.backend.GetVolume(r.Context(), policy, owner, candidate); err == nil {
 			if existing.RequestHash != digest {
@@ -335,8 +377,11 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 }
 
 func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	if err := s.backend.DeleteVolume(r.Context(), policy, owner, r.PathValue("id")); err != nil {
 		backendError(w, err)
 		return
@@ -345,8 +390,11 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request, owner auth
 }
 
 func (s *Server) attachVolume(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	if err := s.backend.AttachVolume(r.Context(), policy, owner, r.PathValue("id"), r.PathValue("volumeID")); err != nil {
 		backendError(w, err)
 		return
@@ -355,8 +403,11 @@ func (s *Server) attachVolume(w http.ResponseWriter, r *http.Request, owner auth
 }
 
 func (s *Server) detachVolume(w http.ResponseWriter, r *http.Request, owner auth.Owner, policy config.RepositoryPolicy) {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	r, finish, ok := s.beginRequestOperation(w, r)
+	if !ok {
+		return
+	}
+	defer finish()
 	if err := s.backend.DetachVolume(r.Context(), policy, owner, r.PathValue("id"), r.PathValue("volumeID")); err != nil {
 		backendError(w, err)
 		return
@@ -466,6 +517,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func backendError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		writeError(w, http.StatusGatewayTimeout, "cluster_timeout", "Harvester operation timed out")
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, ErrConflict):

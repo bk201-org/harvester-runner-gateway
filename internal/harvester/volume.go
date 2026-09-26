@@ -155,13 +155,66 @@ func (b *Backend) attachedVM(ctx context.Context, namespace, volumeID string) (s
 		return "", err
 	}
 	for i := range list.Items {
-		for _, claim := range vmClaimNames(&list.Items[i]) {
+		for _, claim := range vmVolumeClaims(&list.Items[i]) {
 			if claim == volumeID {
 				return list.Items[i].GetName(), nil
 			}
 		}
 	}
+	vmiList, err := b.dynamic.Resource(vmiGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+	for i := range vmiList.Items {
+		volumes, _, _ := unstructured.NestedSlice(vmiList.Items[i].Object, "spec", "volumes")
+		if hasVolumeClaim(volumes, volumeID) {
+			return vmiList.Items[i].GetName(), nil
+		}
+	}
 	return "", nil
+}
+
+func vmVolumeClaims(vm *unstructured.Unstructured) []string {
+	claims := vmClaimNames(vm)
+	requests, _, _ := unstructured.NestedSlice(vm.Object, "status", "volumeRequests")
+	for _, raw := range requests {
+		request, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if add, ok := request["addVolumeOptions"].(map[string]any); ok {
+			if source, ok := add["volumeSource"].(map[string]any); ok {
+				if pvc, ok := source["persistentVolumeClaim"].(map[string]any); ok {
+					if name, ok := pvc["claimName"].(string); ok {
+						claims = append(claims, name)
+					}
+				}
+			}
+		}
+		if remove, ok := request["removeVolumeOptions"].(map[string]any); ok {
+			if name, ok := remove["name"].(string); ok {
+				claims = append(claims, name)
+			}
+		}
+	}
+	return claims
+}
+
+func hasVolumeClaim(volumes []any, volumeID string) bool {
+	for _, raw := range volumes {
+		volume, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		pvc, ok := volume["persistentVolumeClaim"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := pvc["claimName"].(string); ok && name == volumeID {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Backend) AttachVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, vmID, volumeID string) error {

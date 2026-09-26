@@ -30,13 +30,21 @@ type Owner struct {
 }
 
 type Verifier struct {
-	issuer   string
-	audience string
-	client   *http.Client
-	mu       sync.Mutex
-	keys     map[string]*rsa.PublicKey
-	until    time.Time
+	issuer             string
+	audience           string
+	client             *http.Client
+	mu                 sync.RWMutex
+	refreshMu          sync.Mutex
+	keys               map[string]*rsa.PublicKey
+	until              time.Time
+	lastRefreshAttempt time.Time
 }
+
+const (
+	keyCacheTTL           = time.Hour
+	keyRefreshCooldown    = time.Minute
+	failedRefreshCooldown = 5 * time.Second
+)
 
 func NewVerifier(issuer, audience string) *Verifier {
 	return &Verifier{issuer: strings.TrimSuffix(issuer, "/"), audience: audience,
@@ -76,20 +84,43 @@ func (v *Verifier) Verify(ctx context.Context, raw string, cfg config.Config) (O
 }
 
 func (v *Verifier) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if time.Now().Before(v.until) {
-		if key := v.keys[kid]; key != nil {
-			return key, nil
-		}
+	if key, fresh, _ := v.cachedKey(kid, time.Now()); key != nil && fresh {
+		return key, nil
 	}
+
+	v.refreshMu.Lock()
+	defer v.refreshMu.Unlock()
+
+	now := time.Now()
+	if key, fresh, recentlyAttempted := v.cachedKey(kid, now); key != nil && fresh {
+		return key, nil
+	} else if recentlyAttempted {
+		return nil, ErrUnauthorized
+	}
+	v.mu.Lock()
+	v.lastRefreshAttempt = now
+	v.mu.Unlock()
+
 	if err := v.refresh(ctx); err != nil {
 		return nil, err
 	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
 	if key := v.keys[kid]; key != nil {
 		return key, nil
 	}
 	return nil, ErrUnauthorized
+}
+
+func (v *Verifier) cachedKey(kid string, now time.Time) (*rsa.PublicKey, bool, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	fresh := now.Before(v.until)
+	cooldown := keyRefreshCooldown
+	if !fresh {
+		cooldown = failedRefreshCooldown
+	}
+	return v.keys[kid], fresh, now.Sub(v.lastRefreshAttempt) < cooldown
 }
 
 func (v *Verifier) refresh(ctx context.Context) error {
@@ -137,8 +168,10 @@ func (v *Verifier) refresh(ctx context.Context) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("OIDC provider returned no usable signing keys")
 	}
+	v.mu.Lock()
 	v.keys = keys
-	v.until = time.Now().Add(time.Hour)
+	v.until = time.Now().Add(keyCacheTTL)
+	v.mu.Unlock()
 	return nil
 }
 

@@ -29,18 +29,20 @@ import (
 )
 
 const (
-	managedLabel = "app.kubernetes.io/managed-by"
-	managedValue = "harvester-runner-gateway"
-	repoLabel    = "rgw-repository-id"
-	runLabel     = "rgw-run-id"
-	attemptLabel = "rgw-run-attempt"
-	kindLabel    = "rgw-kind"
-	expiresKey   = "rgw-expires-at"
-	hashKey      = "rgw-request-hash"
-	imageKey     = "harvesterhci.io/imageId"
-	autoDelete   = "terraform-provider-harvester-auto-delete"
-	claimKey     = "harvesterhci.io/volumeClaimTemplates"
-	removedKey   = "harvesterhci.io/removedPersistentVolumeClaims"
+	managedLabel    = "app.kubernetes.io/managed-by"
+	managedValue    = "harvester-runner-gateway"
+	repoLabel       = "rgw-repository-id"
+	runLabel        = "rgw-run-id"
+	attemptLabel    = "rgw-run-attempt"
+	kindLabel       = "rgw-kind"
+	expiresKey      = "rgw-expires-at"
+	hashKey         = "rgw-request-hash"
+	imageKey        = "harvesterhci.io/imageId"
+	autoDelete      = "terraform-provider-harvester-auto-delete"
+	claimKey        = "harvesterhci.io/volumeClaimTemplates"
+	removedKey      = "harvesterhci.io/removedPersistentVolumeClaims"
+	requestTimeout  = 20 * time.Second
+	rollbackTimeout = 5 * time.Second
 )
 
 var (
@@ -67,6 +69,9 @@ func New(cfg config.Config, logger *slog.Logger) (*Backend, error) {
 	restConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, values).ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("parse kubeconfig: %w", err)
+	}
+	if restConfig.Timeout == 0 || restConfig.Timeout > requestTimeout {
+		restConfig.Timeout = requestTimeout
 	}
 	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
@@ -205,6 +210,10 @@ func deleteIgnoringMissing(err error) error {
 		return nil
 	}
 	return err
+}
+
+func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 }
 
 func secret(namespace, name string, labels, values map[string]string, userData string) *corev1.Secret {

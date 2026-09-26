@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -199,6 +200,38 @@ func doRequest(s *Server, method, path, token, key string, body any) *httptest.R
 
 func vmRequest() VMRequest {
 	return VMRequest{Image: "default/ubuntu", Network: "default/network", CPU: 2, Memory: "4Gi", BootDiskSize: "20Gi"}
+}
+
+func TestOperationWaitHonorsContext(t *testing.T) {
+	s := testServer(1, 1)
+	_, release, err := s.beginOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, err := s.beginOperation(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting operation returned %v, want deadline exceeded", err)
+	}
+}
+
+func TestOperationHasBackendDeadline(t *testing.T) {
+	s := testServer(1, 1)
+	ctx, release, err := s.beginOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("operation context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > operationTimeout {
+		t.Fatalf("operation deadline is outside expected range: %v", remaining)
+	}
 }
 
 func TestConcurrentCreatesRespectActiveVMQuota(t *testing.T) {
