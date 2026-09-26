@@ -111,4 +111,4 @@ a gateway restart. Deleting a VM does not delete its independent volumes.
 | Kubernetes clients, labels, and annotations | [`internal/harvester/backend.go`](internal/harvester/backend.go) |
 | VM lookup, status, creation, and actions | [`internal/harvester/vm.go`](internal/harvester/vm.go) |
 | Volume status and expiry cleanup | [`internal/harvester/volume.go`](internal/harvester/volume.go) |
-| Startup and cleanup schedule | [`cmd/harvester-runner-gateway/main.go`](cmd/harvester-runner-gateway/main.go) |
+| Startup and cleanup schedule | [`cmd/hvst-runner-gw/main.go`](cmd/hvst-runner-gw/main.go) |

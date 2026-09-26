@@ -3,7 +3,7 @@ set -euo pipefail
 
 command -v jq >/dev/null || { echo 'jq is required' >&2; exit 2; }
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-GATEWAY_CLIENT=${GATEWAY_CLIENT:-$script_dir/../bin/harvester-runner-gateway-client}
+GATEWAY_CLIENT=${GATEWAY_CLIENT:-$script_dir/../bin/hvst-runner-gw-client}
 command -v "$GATEWAY_CLIENT" >/dev/null || {
   echo "Gateway client is required: $GATEWAY_CLIENT" >&2
   echo 'Run make build or set GATEWAY_CLIENT to its path.' >&2

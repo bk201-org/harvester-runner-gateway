@@ -159,7 +159,7 @@ func TestInvalidInputsNeverReachNetwork(t *testing.T) {
 func TestHelpDoesNotRequireConfiguration(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"help"}, {"help", "vm", "create"}, {"vm", "--help"}, {"vm", "create", "--help"}, {"vm", "get", "x", "--help"}, {"ready", "--help"}, {"volume", "create", "--help"}} {
 		code, out, err := invoke(args, map[string]string{"GATEWAY_TIMEOUT": "invalid"})
-		if code != 0 || out != "" || !strings.Contains(err, "Usage:") {
+		if code != 0 || out != "" || !strings.Contains(err, "Usage: hvst-runner-gw-client") {
 			t.Fatalf("%v: %d %q %q", args, code, out, err)
 		}
 	}

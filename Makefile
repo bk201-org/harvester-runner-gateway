@@ -1,5 +1,5 @@
-BINARY ?= harvester-runner-gateway
-CLIENT_BINARY ?= harvester-runner-gateway-client
+BINARY ?= hvst-runner-gw
+CLIENT_BINARY ?= hvst-runner-gw-client
 OUTPUT_DIR ?= bin
 IMAGE ?= harvester-runner-gateway:dev
 
@@ -7,8 +7,8 @@ IMAGE ?= harvester-runner-gateway:dev
 
 build:
 	mkdir -p $(OUTPUT_DIR)
-	CGO_ENABLED=0 go build -trimpath -o $(OUTPUT_DIR)/$(BINARY) ./cmd/harvester-runner-gateway
-	CGO_ENABLED=0 go build -trimpath -o $(OUTPUT_DIR)/$(CLIENT_BINARY) ./cmd/harvester-runner-gateway-client
+	CGO_ENABLED=0 go build -trimpath -o $(OUTPUT_DIR)/$(BINARY) ./cmd/hvst-runner-gw
+	CGO_ENABLED=0 go build -trimpath -o $(OUTPUT_DIR)/$(CLIENT_BINARY) ./cmd/hvst-runner-gw-client
 
 test:
 	go test ./...

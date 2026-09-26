@@ -13,7 +13,7 @@ resource names, size limits, and N/M quotas. Then run:
 
 ```sh
 make build
-./bin/harvester-runner-gateway --config /secure/path/config.yaml
+./bin/hvst-runner-gw --config /secure/path/config.yaml
 ```
 
 `make test`, `make vet`, and `make docker-build` are also available. The image
@@ -64,10 +64,10 @@ verification.
 
 ## Client CLI
 
-`make build` builds both the server and `bin/harvester-runner-gateway-client`.
+`make build` builds both the server and `bin/hvst-runner-gw-client`.
 The client uses HTTPS and supports every gateway API operation without needing
 `curl` or a Harvester kubeconfig. It can also be installed directly from this
-checkout with `go install ./cmd/harvester-runner-gateway-client`.
+checkout with `go install ./cmd/hvst-runner-gw-client`.
 
 For local use, configure the gateway's optional `localSmoke` credential as
 [described below](#local-shell), then point the client at the same token file:
@@ -76,7 +76,7 @@ For local use, configure the gateway's optional `localSmoke` credential as
 export GATEWAY_URL=https://gateway.example.internal:8443
 export GATEWAY_TOKEN_FILE=/secure/path/local-smoke-token
 export GATEWAY_CA_CERT=/secure/path/gateway.crt # optional additional trusted CA
-client=./bin/harvester-runner-gateway-client
+client=./bin/hvst-runner-gw-client
 
 "$client" health
 "$client" ready

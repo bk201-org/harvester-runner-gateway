@@ -13,7 +13,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build gateway client
-        run: go build -o bin/harvester-runner-gateway-client ./cmd/harvester-runner-gateway-client
+        run: go build -o bin/hvst-runner-gw-client ./cmd/hvst-runner-gw-client
       - name: Create and inspect VM
         env:
           GATEWAY_URL: https://gateway.example.internal:8443
@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          client=./bin/harvester-runner-gateway-client
+          client=./bin/hvst-runner-gw-client
           vm=$("$client" vm create \
             --image default/ubuntu-24-04 --network default/vm-network \
             --cpu 2 --memory 4Gi --boot-disk-size 20Gi \

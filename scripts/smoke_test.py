@@ -56,7 +56,7 @@ class SmokeScriptTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
-        self.client = root / "harvester-runner-gateway-client"
+        self.client = root / "hvst-runner-gw-client"
         self.client.write_text(FAKE_CLIENT)
         self.client.chmod(0o755)
         self.log = root / "requests.jsonl"

@@ -27,7 +27,7 @@ type command struct {
 	waitTimeout time.Duration
 }
 
-const rootHelp = `Usage: harvester-runner-gateway-client [global flags] COMMAND
+const rootHelp = `Usage: hvst-runner-gw-client [global flags] COMMAND
 
 Commands:
   health                         Check gateway health
@@ -77,7 +77,7 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	if vmWaitTimeout == "" {
 		vmWaitTimeout = defaultVMWaitTimeout.String()
 	}
-	fs := flagSet("harvester-runner-gateway-client", stderr, rootHelp)
+	fs := flagSet("hvst-runner-gw-client", stderr, rootHelp)
 	fs.StringVar(&cfg.URL, "url", cfg.URL, "gateway HTTPS URL (GATEWAY_URL)")
 	fs.StringVar(&cfg.TokenFile, "token-file", cfg.TokenFile, "bearer token file (GATEWAY_TOKEN_FILE)")
 	fs.StringVar(&cfg.CACert, "ca-cert", cfg.CACert, "additional PEM CA certificates (GATEWAY_CA_CERT)")
@@ -146,7 +146,7 @@ func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (comman
 	rest := args[1:]
 	switch command {
 	case "health", "ready", "quota":
-		fs := flagSet(command, output, "Usage: harvester-runner-gateway-client [global flags] "+command)
+		fs := flagSet(command, output, "Usage: hvst-runner-gw-client [global flags] "+command)
 		if err := fs.Parse(rest); err != nil {
 			return op, err
 		}
@@ -210,7 +210,7 @@ func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (comman
 	if action == "attach" || action == "detach" {
 		suffix += " VOLUME_ID"
 	}
-	fs := flagSet(command+" "+action, output, "Usage: harvester-runner-gateway-client [global flags] "+command+" "+action+suffix)
+	fs := flagSet(command+" "+action, output, "Usage: hvst-runner-gw-client [global flags] "+command+" "+action+suffix)
 	// Permit help after positional IDs as well as immediately after the command.
 	for _, arg := range rest {
 		if arg == "--help" || arg == "-h" {
@@ -277,7 +277,7 @@ func positiveQuantity(value string) bool {
 
 func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeout string) (command, error) {
 	op := command{Request: client.Request{Method: "POST", Path: []string{"v1", kind + "s"}, Auth: true, Statuses: []int{200, 201}}}
-	fs := flagSet(kind+" create", output, "Usage: harvester-runner-gateway-client [global flags] "+kind+" create [flags]\nAll size quantities use Kubernetes notation, e.g. 4Gi. VM creation waits for a running VMI with a usable IP unless --no-wait is set.")
+	fs := flagSet(kind+" create", output, "Usage: hvst-runner-gw-client [global flags] "+kind+" create [flags]\nAll size quantities use Kubernetes notation, e.g. 4Gi. VM creation waits for a running VMI with a usable IP unless --no-wait is set.")
 	fs.StringVar(&op.IdempotencyKey, "idempotency-key", "", "required: stable key for repeating this request (1-128 printable non-space ASCII characters)")
 	ttl := fs.Int("ttl-seconds", 0, "resource lifetime, 1-86400 seconds (omitted: server default)")
 	var vm client.VMRequest

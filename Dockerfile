@@ -5,9 +5,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/harvester-runner-gateway ./cmd/harvester-runner-gateway
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/hvst-runner-gw ./cmd/hvst-runner-gw
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=builder /out/harvester-runner-gateway /usr/local/bin/harvester-runner-gateway
+COPY --from=builder /out/hvst-runner-gw /usr/local/bin/hvst-runner-gw
 USER nonroot:nonroot
-ENTRYPOINT ["/usr/local/bin/harvester-runner-gateway"]
+ENTRYPOINT ["/usr/local/bin/hvst-runner-gw"]
