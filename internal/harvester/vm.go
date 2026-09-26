@@ -49,7 +49,7 @@ func (b *Backend) CountVMs(ctx context.Context, policy config.RepositoryPolicy) 
 	}
 	count := 0
 	for i := range list.Items {
-		if repositoryOwned(list.Items[i].GetLabels(), policy.RepositoryID, "vm") {
+		if validID(list.Items[i].GetName()) && repositoryOwned(list.Items[i].GetLabels(), policy.RepositoryID, "vm") {
 			count++
 		}
 	}
@@ -63,7 +63,7 @@ func (b *Backend) ListVMs(ctx context.Context, policy config.RepositoryPolicy, o
 	}
 	items := make([]gateway.VMStatus, 0, len(list.Items))
 	for i := range list.Items {
-		if !owned(list.Items[i].GetLabels(), owner, "vm") {
+		if !validID(list.Items[i].GetName()) || !owned(list.Items[i].GetLabels(), owner, "vm") {
 			continue
 		}
 		item, err := b.vmStatus(ctx, policy.Namespace, &list.Items[i])
@@ -86,7 +86,7 @@ func (b *Backend) GetVM(ctx context.Context, policy config.RepositoryPolicy, own
 func (b *Backend) vmStatus(ctx context.Context, namespace string, vm *unstructured.Unstructured) (gateway.VMStatus, error) {
 	status := gateway.VMStatus{ID: vm.GetName(), Phase: nestedString(vm, "status", "printableStatus"),
 		PowerState: "off", IPAddresses: []string{}, AttachedVolumeIDs: []string{},
-		ExpiresAt: expiry(vm.GetAnnotations()), RequestHash: annotationValue(vm.GetAnnotations(), hashKey, legacyHashKey)}
+		ExpiresAt: expiry(vm.GetAnnotations()), RequestHash: vm.GetAnnotations()[hashKey], IdentityHash: vm.GetAnnotations()[identityKey]}
 	if status.Phase == "" {
 		status.Phase = "Provisioning"
 	}
@@ -163,7 +163,7 @@ func usableInterfaceIPs(vmi *unstructured.Unstructured, interfaceName string) []
 	return addresses
 }
 
-func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VMRequest, expires time.Time, hash string) (gateway.VMStatus, error) {
+func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VMRequest, expires time.Time, metadata gateway.ResourceMetadata) (gateway.VMStatus, error) {
 	imageNS, imageName := splitName(req.Image)
 	image, err := b.dynamic.Resource(imageGVR).Namespace(imageNS).Get(ctx, imageName, metav1.GetOptions{})
 	if err != nil {
@@ -193,19 +193,22 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 		return gateway.VMStatus{}, fmt.Errorf("%w: %v", gateway.ErrInvalid, err)
 	}
 	labels := ownerLabels(owner, "vm")
-	values := annotations(expires, hash)
+	values := annotations(expires, metadata)
+	if err := b.verifyVMDependencies(ctx, policy, owner, id, metadata); err != nil {
+		return gateway.VMStatus{}, err
+	}
 	secretName := id + "-init"
 	secretLabels := ownerLabels(owner, "cloud-init")
-	if _, err := b.kube.CoreV1().Secrets(policy.Namespace).Create(ctx, secret(policy.Namespace, secretName, secretLabels, values, userData), metav1.CreateOptions{}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return gateway.VMStatus{}, translate(err)
-		}
+	secretCreated := false
+	if _, err := b.kube.CoreV1().Secrets(policy.Namespace).Create(ctx, secret(policy.Namespace, secretName, secretLabels, values, userData), metav1.CreateOptions{}); err == nil {
+		secretCreated = true
+	} else {
 		existing, getErr := b.kube.CoreV1().Secrets(policy.Namespace).Get(ctx, secretName, metav1.GetOptions{})
 		if getErr != nil {
-			return gateway.VMStatus{}, translate(getErr)
+			return gateway.VMStatus{}, translate(err)
 		}
-		if !owned(existing.Labels, owner, "cloud-init") || annotationValue(existing.Annotations, hashKey, legacyHashKey) != hash {
-			return gateway.VMStatus{}, fmt.Errorf("%w: cloud-init Secret name is occupied", gateway.ErrConflict)
+		if existing.DeletionTimestamp != nil || !matchingRecovery(existing.Labels, existing.Annotations, owner, "cloud-init", metadata) {
+			return gateway.VMStatus{}, fmt.Errorf("%w: cloud-init Secret name is occupied or deleting", gateway.ErrConflict)
 		}
 		copy := existing.DeepCopy()
 		copy.Annotations[expiresKey] = values[expiresKey]
@@ -215,22 +218,40 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 	}
 	vm, err := buildVM(policy.Namespace, id, req, storageClass, labels, values)
 	if err != nil {
-		rollbackCtx, cancel := rollbackContext(ctx)
-		_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(rollbackCtx, secretName, metav1.DeleteOptions{})
-		cancel()
+		if secretCreated {
+			rollbackCtx, cancel := rollbackContext(ctx)
+			_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(rollbackCtx, secretName, metav1.DeleteOptions{})
+			cancel()
+		}
 		return gateway.VMStatus{}, err
 	}
-	created, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Create(ctx, vm, metav1.CreateOptions{})
-	if err != nil {
-		rollbackCtx, cancel := rollbackContext(ctx)
-		_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(rollbackCtx, secretName, metav1.DeleteOptions{})
-		cancel()
-		return gateway.VMStatus{}, translate(err)
+	created, createErr := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Create(ctx, vm, metav1.CreateOptions{})
+	createdVM := createErr == nil
+	if createErr != nil {
+		existing, getErr := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Get(ctx, id, metav1.GetOptions{})
+		if getErr != nil {
+			if apierrors.IsNotFound(getErr) && secretCreated {
+				rollbackCtx, cancel := rollbackContext(ctx)
+				_ = b.kube.CoreV1().Secrets(policy.Namespace).Delete(rollbackCtx, secretName, metav1.DeleteOptions{})
+				cancel()
+			}
+			return gateway.VMStatus{}, translate(createErr)
+		}
+		if !matchingRecovery(existing.GetLabels(), existing.GetAnnotations(), owner, "vm", metadata) {
+			return gateway.VMStatus{}, fmt.Errorf("%w: VM name is occupied", gateway.ErrConflict)
+		}
+		created = existing
 	}
 	if err := b.subresource(ctx, policy.Namespace, id, "start", map[string]any{}); err != nil {
-		rollbackCtx, cancel := rollbackContext(ctx)
-		_ = b.DeleteVM(rollbackCtx, policy, owner, id)
-		cancel()
+		vmi, getErr := b.dynamic.Resource(vmiGVR).Namespace(policy.Namespace).Get(ctx, id, metav1.GetOptions{})
+		if getErr == nil && matchingRecovery(vmi.GetLabels(), vmi.GetAnnotations(), owner, "vm", metadata) {
+			return b.vmStatus(ctx, policy.Namespace, created)
+		}
+		if createdVM {
+			rollbackCtx, cancel := rollbackContext(ctx)
+			_ = b.DeleteVM(rollbackCtx, policy, owner, id)
+			cancel()
+		}
 		return gateway.VMStatus{}, fmt.Errorf("start VM: %w", err)
 	}
 	return b.vmStatus(ctx, policy.Namespace, created)
@@ -238,7 +259,7 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 
 func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, labels, values map[string]string) (*unstructured.Unstructured, error) {
 	rootName := id + "-root"
-	rootAnnotations := map[string]string{imageKey: req.Image, autoDelete: "true", expiresKey: values[expiresKey]}
+	rootAnnotations := map[string]string{imageKey: req.Image, autoDelete: "true", expiresKey: values[expiresKey], hashKey: values[hashKey], identityKey: values[identityKey]}
 	claimTemplate := []any{map[string]any{
 		"metadata": map[string]any{"name": rootName, "labels": stringMap(ownerLabels(auth.Owner{
 			RepositoryID: labels[repoLabel], RunID: labels[runLabel], RunAttempt: labels[attemptLabel]}, "vm-root")), "annotations": stringMap(rootAnnotations)},
@@ -249,7 +270,7 @@ func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, l
 	if err != nil {
 		return nil, err
 	}
-	metaAnnotations := map[string]any{claimKey: string(encoded), expiresKey: values[expiresKey], hashKey: values[hashKey]}
+	metaAnnotations := map[string]any{claimKey: string(encoded), expiresKey: values[expiresKey], hashKey: values[hashKey], identityKey: values[identityKey]}
 	networkRef := req.Network
 	if strings.HasPrefix(networkRef, namespace+"/") {
 		networkRef = strings.TrimPrefix(networkRef, namespace+"/")
@@ -258,7 +279,7 @@ func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, l
 		"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
 		"metadata": map[string]any{"name": id, "namespace": namespace, "labels": stringMap(labels), "annotations": metaAnnotations},
 		"spec": map[string]any{"runStrategy": "Manual", "template": map[string]any{
-			"metadata": map[string]any{"labels": stringMap(labels)},
+			"metadata": map[string]any{"labels": stringMap(labels), "annotations": stringMap(values)},
 			"spec": map[string]any{
 				"domain": map[string]any{
 					"cpu":       map[string]any{"cores": int64(req.CPU), "sockets": int64(1), "threads": int64(1)},

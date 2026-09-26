@@ -16,11 +16,6 @@ import (
 	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
-func legacyOwnerLabels(owner auth.Owner, kind string) map[string]string {
-	return map[string]string{managedLabel: managedValue, legacyRepoLabel: owner.RepositoryID,
-		legacyRunLabel: owner.RunID, legacyAttemptLabel: owner.RunAttempt, legacyKindLabel: kind}
-}
-
 func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	otherRun := auth.Owner{RepositoryID: "123", RunID: "789", RunAttempt: "1"}
@@ -34,14 +29,13 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 	}
 	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList"},
-		vm("owned-1", ownerLabels(owner, "vm")),
-		vm("owned-2", ownerLabels(owner, "vm")),
-		vm("legacy-owned", legacyOwnerLabels(owner, "vm")),
-		vm("other-run", ownerLabels(otherRun, "vm")),
-		vm("other-attempt", ownerLabels(otherAttempt, "vm")),
-		vm("other-repo", ownerLabels(otherRepo, "vm")),
-		vm("other-kind", ownerLabels(owner, "other")),
-		vm("unmanaged", map[string]string{repoLabel: owner.RepositoryID, kindLabel: "vm"}),
+		vm(testResourceID(owner, 1), ownerLabels(owner, "vm")),
+		vm(testResourceID(owner, 2), ownerLabels(owner, "vm")),
+		vm(testResourceID(otherRun, 1), ownerLabels(otherRun, "vm")),
+		vm(testResourceID(otherAttempt, 1), ownerLabels(otherAttempt, "vm")),
+		vm(testResourceID(otherRepo, 1), ownerLabels(otherRepo, "vm")),
+		vm(testResourceID(owner, 3), ownerLabels(owner, "other")),
+		vm(testResourceID(owner, 4), map[string]string{repoLabel: owner.RepositoryID, kindLabel: "vm"}),
 	)
 	pvc := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
 		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
@@ -49,24 +43,23 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 		}}
 	}
 	kube := kubefake.NewClientset(
-		pvc("owned-volume", ownerLabels(owner, "volume")),
-		pvc("legacy-volume", legacyOwnerLabels(owner, "volume")),
-		pvc("other-run-volume", ownerLabels(otherRun, "volume")),
-		pvc("other-attempt-volume", ownerLabels(otherAttempt, "volume")),
-		pvc("root-disk", ownerLabels(owner, "vm-root")),
-		pvc("other-repo-volume", ownerLabels(otherRepo, "volume")),
-		pvc("unmanaged-volume", map[string]string{repoLabel: owner.RepositoryID, kindLabel: "volume"}),
+		pvc(testResourceID(owner, 1), ownerLabels(owner, "volume")),
+		pvc(testResourceID(otherRun, 1), ownerLabels(otherRun, "volume")),
+		pvc(testResourceID(otherAttempt, 1), ownerLabels(otherAttempt, "volume")),
+		pvc(testResourceID(owner, 2)+"-root", ownerLabels(owner, "vm-root")),
+		pvc(testResourceID(otherRepo, 1), ownerLabels(otherRepo, "volume")),
+		pvc(testResourceID(owner, 3), map[string]string{repoLabel: owner.RepositoryID, kindLabel: "volume"}),
 	)
 	backend := &Backend{dynamic: dynamicClient, kube: kube}
 	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci"}
 
 	vms, err := backend.CountVMs(context.Background(), policy)
-	if err != nil || vms != 5 {
-		t.Fatalf("VM count = %d, error = %v; want 5", vms, err)
+	if err != nil || vms != 4 {
+		t.Fatalf("VM count = %d, error = %v; want 4", vms, err)
 	}
 	volumes, err := backend.CountVolumes(context.Background(), policy)
-	if err != nil || volumes != 4 {
-		t.Fatalf("volume count = %d, error = %v; want 4", volumes, err)
+	if err != nil || volumes != 3 {
+		t.Fatalf("volume count = %d, error = %v; want 3", volumes, err)
 	}
 	if actions := dynamicClient.Actions(); len(actions) != 1 || actions[0].GetVerb() != "list" || actions[0].GetResource().Resource != "virtualmachines" {
 		t.Fatalf("unexpected dynamic client actions: %v", actions)

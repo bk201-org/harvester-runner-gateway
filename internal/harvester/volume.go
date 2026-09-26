@@ -44,7 +44,7 @@ func (b *Backend) CountVolumes(ctx context.Context, policy config.RepositoryPoli
 	}
 	count := 0
 	for i := range list.Items {
-		if repositoryOwned(list.Items[i].Labels, policy.RepositoryID, "volume") {
+		if validID(list.Items[i].Name) && repositoryOwned(list.Items[i].Labels, policy.RepositoryID, "volume") {
 			count++
 		}
 	}
@@ -58,7 +58,7 @@ func (b *Backend) ListVolumes(ctx context.Context, policy config.RepositoryPolic
 	}
 	items := make([]gateway.VolumeStatus, 0, len(list.Items))
 	for i := range list.Items {
-		if !owned(list.Items[i].Labels, owner, "volume") {
+		if !validID(list.Items[i].Name) || !owned(list.Items[i].Labels, owner, "volume") {
 			continue
 		}
 		status, err := b.volumeStatus(ctx, policy.Namespace, &list.Items[i])
@@ -84,7 +84,7 @@ func (b *Backend) volumeStatus(ctx context.Context, namespace string, pvc *corev
 		return gateway.VolumeStatus{}, err
 	}
 	status := gateway.VolumeStatus{ID: pvc.Name, Phase: string(pvc.Status.Phase), Size: pvc.Spec.Resources.Requests.Storage().String(),
-		ExpiresAt: expiry(pvc.Annotations), RequestHash: annotationValue(pvc.Annotations, hashKey, legacyHashKey)}
+		ExpiresAt: expiry(pvc.Annotations), RequestHash: pvc.Annotations[hashKey], IdentityHash: pvc.Annotations[identityKey]}
 	if status.Phase == "" {
 		status.Phase = "Pending"
 	}
@@ -126,11 +126,11 @@ func (b *Backend) volumeStatus(ctx context.Context, namespace string, pvc *corev
 	return status, nil
 }
 
-func (b *Backend) CreateVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VolumeRequest, expires time.Time, hash string) (gateway.VolumeStatus, error) {
+func (b *Backend) CreateVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VolumeRequest, expires time.Time, metadata gateway.ResourceMetadata) (gateway.VolumeStatus, error) {
 	size := resource.MustParse(req.Size)
 	mode := corev1.PersistentVolumeBlock
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: policy.Namespace, Labels: ownerLabels(owner, "volume"), Annotations: annotations(expires, hash)},
+		ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: policy.Namespace, Labels: ownerLabels(owner, "volume"), Annotations: annotations(expires, metadata)},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			StorageClassName: &policy.StorageClass, VolumeMode: &mode,
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
@@ -139,7 +139,14 @@ func (b *Backend) CreateVolume(ctx context.Context, policy config.RepositoryPoli
 	}
 	created, err := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
 	if err != nil {
-		return gateway.VolumeStatus{}, translate(err)
+		existing, getErr := b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Get(ctx, id, metav1.GetOptions{})
+		if getErr != nil {
+			return gateway.VolumeStatus{}, translate(err)
+		}
+		if !matchingRecovery(existing.Labels, existing.Annotations, owner, "volume", metadata) {
+			return gateway.VolumeStatus{}, fmt.Errorf("%w: volume name is occupied", gateway.ErrConflict)
+		}
+		created = existing
 	}
 	return b.volumeStatus(ctx, policy.Namespace, created)
 }
@@ -362,7 +369,7 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 		}
 		for i := range vms.Items {
 			vm := &vms.Items[i]
-			if labelKind(vm.GetLabels()) != "vm" || now.Before(expiry(vm.GetAnnotations())) {
+			if !validID(vm.GetName()) || labelKind(vm.GetLabels()) != "vm" || now.Before(expiry(vm.GetAnnotations())) {
 				continue
 			}
 			owner := parseOwner(vm.GetLabels())
@@ -378,6 +385,12 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 		for i := range volumes.Items {
 			pvc := &volumes.Items[i]
 			kind := labelKind(pvc.Labels)
+			if kind == "volume" && !validID(pvc.Name) {
+				continue
+			}
+			if kind == "vm-root" && (!strings.HasSuffix(pvc.Name, "-root") || !validID(strings.TrimSuffix(pvc.Name, "-root"))) {
+				continue
+			}
 			if (kind != "volume" && kind != "vm-root") || now.Before(expiry(pvc.Annotations)) {
 				continue
 			}
@@ -422,7 +435,7 @@ func (b *Backend) CleanupExpired(ctx context.Context, now time.Time) error {
 		}
 		for i := range secrets.Items {
 			item := &secrets.Items[i]
-			if labelKind(item.Labels) == "cloud-init" && !now.Before(expiry(item.Annotations)) {
+			if labelKind(item.Labels) == "cloud-init" && strings.HasSuffix(item.Name, "-init") && validID(strings.TrimSuffix(item.Name, "-init")) && !now.Before(expiry(item.Annotations)) {
 				vmID := strings.TrimSuffix(item.Name, "-init")
 				if vmID == item.Name {
 					continue

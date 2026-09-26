@@ -53,12 +53,18 @@ func run(path string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("Harvester preflight: %w", err)
 	}
+	api := gateway.NewServer(cfg, verifier, backend)
+	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 45*time.Second)
+	err = api.RecoverAllocations(recoveryCtx)
+	recoveryCancel()
+	if err != nil {
+		return fmt.Errorf("recover allocations: %w", err)
+	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 45*time.Second)
-	if err := backend.CleanupExpired(cleanupCtx, time.Now()); err != nil {
+	if err := api.CleanupExpired(cleanupCtx, time.Now()); err != nil {
 		logger.Warn("initial expiry cleanup failed", "error", err)
 	}
 	cleanupCancel()
-	api := gateway.NewServer(cfg, verifier, backend)
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: api.Handler,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,

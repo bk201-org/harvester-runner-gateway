@@ -29,21 +29,20 @@ same run attempt share resources. Local smoke and workflow resources have
 separate owners, while all runs of a repository share its quota. Each
 repository policy selects the namespace and allowed resource settings.
 
-Created VMs, independent volume PVCs, boot disk PVCs, and cloud-init Secrets
-carry labels identifying the gateway, owner, and resource kind. Their annotations
-include an expiry time; VM and independent volume objects also carry a hash of
-the create request. The Kubernetes objects are the durable resource record. The
-gateway has no resource database, VM status cache, or Kubernetes informer.
+Created VMs, VMIs, independent volume PVCs, boot disk PVCs, and cloud-init
+Secrets carry current `runner-gw-*` ownership, kind, expiry, request-hash, and
+identity-hash metadata. Raw idempotency keys and request bodies are never stored.
+The resource name is not an authorization credential; every operation checks
+owner labels.
 
-For a create request, the gateway derives a stable `runner-gw-` resource ID from
-the owner, resource kind, and `Idempotency-Key`. The suffix is the unpadded
-lowercase base32 encoding of the first 10 bytes of the SHA-256 identity hash
-(16 characters, 80 bits). It hashes the request body separately. If that ID
-already exists with the same request hash, the API returns the existing resource.
-A different request with the same key returns a conflict. Existing `hrgw-` and
-`rgw-` IDs remain readable, and retries with their original keys return those
-resources. New resources use `runner-gw-` labels and annotations; existing
-resources retain their old metadata keys until they expire.
+VMs and independent volumes use `ci-<repository-id>-<run-id>-a<attempt>-<sequence>`
+IDs such as `ci-123456789-1658821493-a2-001`. VM and volume sequences are
+independent for each namespace and owner, so a VM and volume may have the same
+ID. Boot disks and cloud-init Secrets use `<id>-root` and `<id>-init`. The
+allocator stores high-water marks and SHA-256 idempotency identities in memory.
+At startup it rebuilds them from surviving VM, VMI, PVC, and Secret metadata
+before cleanup or serving. A same-key retry uses its recovered ID and the
+separate request hash detects payload conflicts.
 
 ## How VM status is read
 
@@ -85,10 +84,10 @@ The gateway counts VMs and independent volume PVCs labeled for the repository
 across all runs and attempts by listing cluster objects. Count queries do not
 fetch VMIs or resolve volume attachments; full status reads still do.
 Provisioning and deleting objects continue to count until they disappear. Each
-VM consumes one VM quota slot; its boot disk PVC is not counted separately. A
-process-local mutex serializes quota checks with creates, so
-the current design requires one gateway instance for reliable quota enforcement.
-That mutex does not store resource status.
+VM consumes one VM quota slot; its boot disk PVC is not counted separately. An
+operation gate serializes allocation, quota checks, creates, deletes, and
+cleanup. The in-memory allocator and quota checks require exactly one active
+gateway instance.
 
 VM creation writes a cloud-init Secret and VM object, then requests a KubeVirt
 start action. The VM's boot disk is a PVC created from its volume claim template.
@@ -96,19 +95,20 @@ Independent volumes are separate PVCs and can be attached to running VMs. A
 successful create response can precede completion of VM or volume provisioning;
 clients poll the GET endpoint for progress.
 
-At startup and every minute, the gateway lists its labeled cluster resources
-and removes expired VMs, volumes, boot disks, and cloud-init Secrets. If an
-independent volume is still attached when it expires, cleanup first requests
-detach and deletes it on a later pass. This scan also lets cleanup resume after
+At startup the gateway first reconstructs allocation state, then runs expiry
+cleanup. Every minute it lists its labeled cluster resources and removes expired
+VMs, volumes, boot disks, and cloud-init Secrets. If an independent
+volume is still attached when it expires, cleanup first requests detach and
+deletes it on a later pass. This scan also lets cleanup resume after
 a gateway restart. Deleting a VM does not delete its independent volumes.
 
 ## Code map
 
 | Area | Implementation |
 | --- | --- |
-| HTTP routes, status response, quota lock | [`internal/gateway/api.go`](internal/gateway/api.go) |
+| HTTP routes, operation gate, allocator | [`internal/gateway/api.go`](internal/gateway/api.go), [`internal/gateway/allocation.go`](internal/gateway/allocation.go) |
 | OIDC verification and owner identity | [`internal/auth/oidc.go`](internal/auth/oidc.go) |
-| Kubernetes clients, labels, and annotations | [`internal/harvester/backend.go`](internal/harvester/backend.go) |
+| Kubernetes clients, metadata, recovery scan | [`internal/harvester/backend.go`](internal/harvester/backend.go), [`internal/harvester/allocation.go`](internal/harvester/allocation.go) |
 | VM lookup, status, creation, and actions | [`internal/harvester/vm.go`](internal/harvester/vm.go) |
 | Volume status and expiry cleanup | [`internal/harvester/volume.go`](internal/harvester/volume.go) |
 | Startup and cleanup schedule | [`cmd/hvst-runner-gw/main.go`](cmd/hvst-runner-gw/main.go) |

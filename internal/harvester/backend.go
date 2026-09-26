@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -29,26 +28,21 @@ import (
 )
 
 const (
-	managedLabel       = "app.kubernetes.io/managed-by"
-	managedValue       = "harvester-runner-gateway"
-	repoLabel          = "runner-gw-repository-id"
-	runLabel           = "runner-gw-run-id"
-	attemptLabel       = "runner-gw-run-attempt"
-	kindLabel          = "runner-gw-kind"
-	expiresKey         = "runner-gw-expires-at"
-	hashKey            = "runner-gw-request-hash"
-	legacyRepoLabel    = "rgw-repository-id"
-	legacyRunLabel     = "rgw-run-id"
-	legacyAttemptLabel = "rgw-run-attempt"
-	legacyKindLabel    = "rgw-kind"
-	legacyExpiresKey   = "rgw-expires-at"
-	legacyHashKey      = "rgw-request-hash"
-	imageKey           = "harvesterhci.io/imageId"
-	autoDelete         = "terraform-provider-harvester-auto-delete"
-	claimKey           = "harvesterhci.io/volumeClaimTemplates"
-	removedKey         = "harvesterhci.io/removedPersistentVolumeClaims"
-	requestTimeout     = 20 * time.Second
-	rollbackTimeout    = 5 * time.Second
+	managedLabel    = "app.kubernetes.io/managed-by"
+	managedValue    = "harvester-runner-gateway"
+	repoLabel       = "runner-gw-repository-id"
+	runLabel        = "runner-gw-run-id"
+	attemptLabel    = "runner-gw-run-attempt"
+	kindLabel       = "runner-gw-kind"
+	expiresKey      = "runner-gw-expires-at"
+	hashKey         = "runner-gw-request-hash"
+	identityKey     = "runner-gw-identity-hash"
+	imageKey        = "harvesterhci.io/imageId"
+	autoDelete      = "terraform-provider-harvester-auto-delete"
+	claimKey        = "harvesterhci.io/volumeClaimTemplates"
+	removedKey      = "harvesterhci.io/removedPersistentVolumeClaims"
+	requestTimeout  = 20 * time.Second
+	rollbackTimeout = 5 * time.Second
 )
 
 var (
@@ -151,10 +145,7 @@ func managedSelector() string {
 }
 
 func labeledOwner(labels map[string]string) (auth.Owner, string) {
-	if labels[kindLabel] != "" {
-		return auth.Owner{RepositoryID: labels[repoLabel], RunID: labels[runLabel], RunAttempt: labels[attemptLabel]}, labels[kindLabel]
-	}
-	return auth.Owner{RepositoryID: labels[legacyRepoLabel], RunID: labels[legacyRunLabel], RunAttempt: labels[legacyAttemptLabel]}, labels[legacyKindLabel]
+	return auth.Owner{RepositoryID: labels[repoLabel], RunID: labels[runLabel], RunAttempt: labels[attemptLabel]}, labels[kindLabel]
 }
 
 func owned(labels map[string]string, owner auth.Owner, kind string) bool {
@@ -177,24 +168,18 @@ func labelKind(labels map[string]string) string {
 	return kind
 }
 
-func annotations(expires time.Time, hash string) map[string]string {
-	return map[string]string{expiresKey: strconv.FormatInt(expires.Unix(), 10), hashKey: hash}
-}
-
-func annotationValue(values map[string]string, current, legacy string) string {
-	if value, ok := values[current]; ok {
-		return value
-	}
-	return values[legacy]
+func annotations(expires time.Time, metadata gateway.ResourceMetadata) map[string]string {
+	return map[string]string{expiresKey: strconv.FormatInt(expires.Unix(), 10), hashKey: metadata.RequestHash, identityKey: metadata.IdentityHash}
 }
 
 func expiry(values map[string]string) time.Time {
-	seconds, _ := strconv.ParseInt(annotationValue(values, expiresKey, legacyExpiresKey), 10, 64)
+	seconds, _ := strconv.ParseInt(values[expiresKey], 10, 64)
 	return time.Unix(seconds, 0).UTC()
 }
 
 func validID(id string) bool {
-	return (strings.HasPrefix(id, "runner-gw-") || strings.HasPrefix(id, "hrgw-") || strings.HasPrefix(id, "rgw-")) && len(validation.IsDNS1123Label(id)) == 0
+	_, _, ok := gateway.ParseResourceID(id)
+	return ok
 }
 
 func splitName(name string) (string, string) {

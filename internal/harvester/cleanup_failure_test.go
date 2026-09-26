@@ -22,20 +22,20 @@ import (
 func TestFailedVMDeletionKeepsRootAndCloudInit(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	expires := time.Now().Add(-time.Minute)
-	id := "runner-gw-expired"
+	id := testResourceID(owner, 1)
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
 		"metadata": map[string]any{"name": id, "namespace": "ci", "labels": stringMap(ownerLabels(owner, "vm")),
-			"annotations": stringMap(annotations(expires, "hash"))},
+			"annotations": stringMap(annotations(expires, testMetadata))},
 	}}
 	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList"}, vm)
 	dynamicClient.PrependReactor("update", "virtualmachines", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("simulated update failure")
 	})
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: id + "-root", Namespace: "ci",
-		Labels: ownerLabels(owner, "vm-root"), Annotations: annotations(expires, "hash")}}
+		Labels: ownerLabels(owner, "vm-root"), Annotations: annotations(expires, testMetadata)}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: id + "-init", Namespace: "ci",
-		Labels: ownerLabels(owner, "cloud-init"), Annotations: annotations(expires, "hash")}}
+		Labels: ownerLabels(owner, "cloud-init"), Annotations: annotations(expires, testMetadata)}}
 	kube := kubefake.NewClientset(pvc, secret)
 	backend := &Backend{dynamic: dynamicClient, kube: kube,
 		cfg: config.Config{Repositories: []config.RepositoryPolicy{{RepositoryID: "123", Namespace: "ci"}}}}

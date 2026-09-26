@@ -24,12 +24,14 @@ type fakeVerifier struct{}
 func (fakeVerifier) Verify(_ context.Context, token string, cfg config.Config) (auth.Owner, config.RepositoryPolicy, error) {
 	policy := cfg.Repositories[0]
 	if token == "run-one-attempt-two" {
-		return auth.Owner{RepositoryID: policy.RepositoryID, RunID: "run-one", RunAttempt: "2"}, policy, nil
+		return auth.Owner{RepositoryID: policy.RepositoryID, RunID: "1001", RunAttempt: "2"}, policy, nil
 	}
 	if token != "run-one" && token != "run-two" {
 		return auth.Owner{}, policy, auth.ErrUnauthorized
 	}
-	return auth.Owner{RepositoryID: policy.RepositoryID, RunID: token, RunAttempt: "1"}, policy, nil
+
+	runID := map[string]string{"run-one": "1001", "run-two": "1002"}[token]
+	return auth.Owner{RepositoryID: policy.RepositoryID, RunID: runID, RunAttempt: "1"}, policy, nil
 }
 
 type fakeVM struct {
@@ -43,9 +45,11 @@ type fakeVolume struct {
 }
 
 type fakeBackend struct {
-	mu      sync.Mutex
-	vms     map[string]fakeVM
-	volumes map[string]fakeVolume
+	validateErr error
+	allocations []AllocationObservation
+	mu          sync.Mutex
+	vms         map[string]fakeVM
+	volumes     map[string]fakeVolume
 }
 
 func newFakeBackend() *fakeBackend {
@@ -88,10 +92,14 @@ func (b *fakeBackend) GetVM(_ context.Context, _ config.RepositoryPolicy, owner 
 	return record.item, nil
 }
 
-func (b *fakeBackend) CreateVM(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner, id string, _ VMRequest, expires time.Time, hash string) (VMStatus, error) {
+func (b *fakeBackend) ValidateVM(context.Context, config.RepositoryPolicy, VMRequest) error {
+	return b.validateErr
+}
+
+func (b *fakeBackend) CreateVM(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner, id string, _ VMRequest, expires time.Time, metadata ResourceMetadata) (VMStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	item := VMStatus{ID: id, Phase: "Provisioning", PowerState: "off", IPAddresses: []string{}, AttachedVolumeIDs: []string{}, ExpiresAt: expires, RequestHash: hash}
+	item := VMStatus{ID: id, Phase: "Provisioning", PowerState: "off", IPAddresses: []string{}, AttachedVolumeIDs: []string{}, ExpiresAt: expires, RequestHash: metadata.RequestHash, IdentityHash: metadata.IdentityHash}
 	b.vms[id] = fakeVM{owner: owner, item: item}
 	return item, nil
 }
@@ -148,10 +156,10 @@ func (b *fakeBackend) GetVolume(_ context.Context, _ config.RepositoryPolicy, ow
 	return record.item, nil
 }
 
-func (b *fakeBackend) CreateVolume(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner, id string, req VolumeRequest, expires time.Time, hash string) (VolumeStatus, error) {
+func (b *fakeBackend) CreateVolume(_ context.Context, _ config.RepositoryPolicy, owner auth.Owner, id string, req VolumeRequest, expires time.Time, metadata ResourceMetadata) (VolumeStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	item := VolumeStatus{ID: id, Phase: "Pending", Size: req.Size, ExpiresAt: expires, RequestHash: hash}
+	item := VolumeStatus{ID: id, Phase: "Pending", Size: req.Size, ExpiresAt: expires, RequestHash: metadata.RequestHash, IdentityHash: metadata.IdentityHash}
 	b.volumes[id] = fakeVolume{owner: owner, item: item}
 	return item, nil
 }
@@ -174,6 +182,9 @@ func (*fakeBackend) DetachVolume(context.Context, config.RepositoryPolicy, auth.
 	return nil
 }
 func (*fakeBackend) CleanupExpired(context.Context, time.Time) error { return nil }
+func (b *fakeBackend) ListAllocations(context.Context) ([]AllocationObservation, error) {
+	return b.allocations, nil
+}
 
 func testServer(maxVMs, maxVolumes int) *Server {
 	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci",
@@ -397,64 +408,35 @@ func TestQuotaSharedAcrossRunsAndAttempts(t *testing.T) {
 	}
 }
 
-func TestResourceIdentityUsesRunnerGatewayName(t *testing.T) {
-	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "2"}
-	id, hash := resourceIdentity(owner, "vm", "example", vmRequest())
-	if id != "runner-gw-u6bpqc4qo7b6k35d" {
-		t.Fatalf("ID = %q", id)
-	}
-	legacy := legacyResourceIDs(owner, "vm", "example")
-	if len(legacy) != 2 || legacy[0] != "hrgw-u6bpqc4qo7b6k35d" || legacy[1] != "rgw-u6bpqc4qo7b6k35diocof63v" {
-		t.Fatalf("legacy IDs = %v", legacy)
-	}
-	changed := vmRequest()
-	changed.CPU++
-	changedID, changedHash := resourceIdentity(owner, "vm", "example", changed)
-	if changedID != id || changedHash == hash {
-		t.Fatalf("request change: ID = %q, hash = %q", changedID, changedHash)
-	}
-}
-
-func TestLegacyResourceIDRetry(t *testing.T) {
-	owner := auth.Owner{RepositoryID: "123", RunID: "run-one", RunAttempt: "1"}
-	for _, legacyIndex := range []int{0, 1} {
-		s := testServer(2, 2)
-		backend := s.backend.(*fakeBackend)
-		vmID := legacyResourceIDs(owner, "vm", "old-vm")[legacyIndex]
-		vmBody := vmRequest()
-		vmBody.TTLSeconds = int(config.DefaultTTL.Seconds())
-		_, vmHash := resourceIdentity(owner, "vm", "old-vm", vmBody)
-		backend.vms[vmID] = fakeVM{owner: owner, item: VMStatus{ID: vmID, RequestHash: vmHash}}
-		volumeID := legacyResourceIDs(owner, "volume", "old-volume")[legacyIndex]
-		_, volumeHash := resourceIdentity(owner, "volume", "old-volume", VolumeRequest{Size: "1Gi", TTLSeconds: int(config.DefaultTTL.Seconds())})
-		backend.volumes[volumeID] = fakeVolume{owner: owner, item: VolumeStatus{ID: volumeID, RequestHash: volumeHash}}
-
-		for _, tc := range []struct {
-			path, key, id string
-			body          any
-		}{
-			{"/v1/vms", "old-vm", vmID, vmRequest()},
-			{"/v1/volumes", "old-volume", volumeID, VolumeRequest{Size: "1Gi"}},
-		} {
-			got := doRequest(s, http.MethodPost, tc.path, "run-one", tc.key, tc.body)
-			if got.Code != http.StatusOK {
-				t.Fatalf("retry %s for %s: %d %s", tc.path, tc.id, got.Code, got.Body.String())
-			}
-			var item struct {
-				ID string `json:"id"`
-			}
-			if err := json.Unmarshal(got.Body.Bytes(), &item); err != nil || item.ID != tc.id {
-				t.Fatalf("retry %s for %s: ID %q, error %v", tc.path, tc.id, item.ID, err)
-			}
+func TestSequentialResourceNamesAndIndependentKinds(t *testing.T) {
+	s := testServer(10, 10)
+	for _, tc := range []struct {
+		path, key, want string
+		body            any
+	}{
+		{"/v1/vms", "vm-one", "ci-123-1001-a1-001", vmRequest()},
+		{"/v1/vms", "vm-two", "ci-123-1001-a1-002", vmRequest()},
+		{"/v1/volumes", "volume-one", "ci-123-1001-a1-001", VolumeRequest{Size: "1Gi"}},
+		{"/v1/volumes", "volume-two", "ci-123-1001-a1-002", VolumeRequest{Size: "1Gi"}},
+	} {
+		got := doRequest(s, http.MethodPost, tc.path, "run-one", tc.key, tc.body)
+		if got.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", tc.path, got.Code, got.Body.String())
 		}
-		changed := vmRequest()
-		changed.CPU++
-		if got := doRequest(s, http.MethodPost, "/v1/vms", "run-one", "old-vm", changed); got.Code != http.StatusConflict {
-			t.Fatalf("changed legacy retry for %s: %d %s", vmID, got.Code, got.Body.String())
+		var item struct {
+			ID string `json:"id"`
 		}
-		if len(backend.vms) != 1 || len(backend.volumes) != 1 {
-			t.Fatalf("retry created a duplicate: %d VMs, %d volumes", len(backend.vms), len(backend.volumes))
+		if err := json.Unmarshal(got.Body.Bytes(), &item); err != nil || item.ID != tc.want {
+			t.Fatalf("create %s ID = %q, error %v; want %q", tc.path, item.ID, err, tc.want)
 		}
+	}
+	other := doRequest(s, http.MethodPost, "/v1/vms", "run-one-attempt-two", "vm", vmRequest())
+	var item struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(other.Body.Bytes(), &item)
+	if other.Code != http.StatusCreated || item.ID != "ci-123-1001-a2-001" {
+		t.Fatalf("other attempt = %d %q", other.Code, item.ID)
 	}
 }
 

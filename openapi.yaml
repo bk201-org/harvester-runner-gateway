@@ -173,17 +173,26 @@ components:
       name: id
       in: path
       required: true
-      schema: {type: string}
+      schema:
+        type: string
+        pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
+        example: ci-123456789-1658821493-a2-001
     VolumeID:
       name: id
       in: path
       required: true
-      schema: {type: string}
+      schema:
+        type: string
+        pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
+        example: ci-123456789-1658821493-a2-001
     AttachedVolumeID:
       name: volumeID
       in: path
       required: true
-      schema: {type: string}
+      schema:
+        type: string
+        pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
+        example: ci-123456789-1658821493-a2-001
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -217,7 +226,7 @@ components:
       type: object
       required: [id, phase, powerState, ready, ipAddresses, attachedVolumeIDs, expiresAt]
       properties:
-        id: {type: string}
+        id: {type: string, example: ci-123456789-1658821493-a2-001}
         phase: {type: string}
         powerState: {type: string, enum: ["on", "off"]}
         ready: {type: boolean, description: VMI is Running and nic-1 has a usable IP address}
@@ -233,7 +242,7 @@ components:
       type: object
       required: [id, phase, size, expiresAt]
       properties:
-        id: {type: string}
+        id: {type: string, example: ci-123456789-1658821493-a2-001}
         phase: {type: string}
         size: {type: string}
         attachedTo: {type: string}

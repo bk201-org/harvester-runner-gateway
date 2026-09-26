@@ -2,10 +2,7 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base32"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +51,7 @@ type VMStatus struct {
 	Message           string    `json:"message,omitempty"`
 	ExpiresAt         time.Time `json:"expiresAt"`
 	RequestHash       string    `json:"-"`
+	IdentityHash      string    `json:"-"`
 }
 
 type VolumeStatus struct {
@@ -64,6 +62,7 @@ type VolumeStatus struct {
 	AttachmentPhase string    `json:"attachmentPhase,omitempty"`
 	ExpiresAt       time.Time `json:"expiresAt"`
 	RequestHash     string    `json:"-"`
+	IdentityHash    string    `json:"-"`
 }
 
 type Backend interface {
@@ -71,18 +70,20 @@ type Backend interface {
 	CountVMs(context.Context, config.RepositoryPolicy) (int, error)
 	ListVMs(context.Context, config.RepositoryPolicy, auth.Owner) ([]VMStatus, error)
 	GetVM(context.Context, config.RepositoryPolicy, auth.Owner, string) (VMStatus, error)
-	CreateVM(context.Context, config.RepositoryPolicy, auth.Owner, string, VMRequest, time.Time, string) (VMStatus, error)
+	ValidateVM(context.Context, config.RepositoryPolicy, VMRequest) error
+	CreateVM(context.Context, config.RepositoryPolicy, auth.Owner, string, VMRequest, time.Time, ResourceMetadata) (VMStatus, error)
 	DeleteVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	PowerVM(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
 	RebootVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	CountVolumes(context.Context, config.RepositoryPolicy) (int, error)
 	ListVolumes(context.Context, config.RepositoryPolicy, auth.Owner) ([]VolumeStatus, error)
 	GetVolume(context.Context, config.RepositoryPolicy, auth.Owner, string) (VolumeStatus, error)
-	CreateVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, VolumeRequest, time.Time, string) (VolumeStatus, error)
+	CreateVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, VolumeRequest, time.Time, ResourceMetadata) (VolumeStatus, error)
 	DeleteVolume(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	AttachVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
 	DetachVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
 	CleanupExpired(context.Context, time.Time) error
+	ListAllocations(context.Context) ([]AllocationObservation, error)
 }
 
 type TokenVerifier interface {
@@ -90,15 +91,16 @@ type TokenVerifier interface {
 }
 
 type Server struct {
-	cfg      config.Config
-	verifier TokenVerifier
-	backend  Backend
-	opGate   chan struct{}
-	Handler  http.Handler
+	cfg       config.Config
+	verifier  TokenVerifier
+	backend   Backend
+	opGate    chan struct{}
+	allocator *allocator
+	Handler   http.Handler
 }
 
 func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Server {
-	s := &Server{cfg: cfg, verifier: verifier, backend: backend, opGate: make(chan struct{}, 1)}
+	s := &Server{cfg: cfg, verifier: verifier, backend: backend, opGate: make(chan struct{}, 1), allocator: newAllocator()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +125,21 @@ func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Serv
 	mux.HandleFunc("DELETE /v1/volumes/{id}", s.authorize(s.deleteVolume))
 	s.Handler = mux
 	return s
+}
+
+// RecoverAllocations reconstructs sequential allocation state from all
+// surviving managed Kubernetes objects. It must complete before serving.
+func (s *Server) RecoverAllocations(ctx context.Context) error {
+	ctx, finish, err := s.beginOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	observations, err := s.backend.ListAllocations(ctx)
+	if err != nil {
+		return err
+	}
+	return s.allocator.recover(observations)
 }
 
 func (s *Server) CleanupExpired(ctx context.Context, now time.Time) error {
@@ -223,15 +240,17 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 	if !ok {
 		return
 	}
-	id, digest := resourceIdentity(owner, "vm", key, req)
+	identity := allocationIdentity(owner, "vm", key)
+	digest := requestHash(req)
 	r, finish, ok := s.beginRequestOperation(w, r)
 	if !ok {
 		return
 	}
 	defer finish()
-	for _, candidate := range append([]string{id}, legacyResourceIDs(owner, "vm", key)...) {
-		if existing, err := s.backend.GetVM(r.Context(), policy, owner, candidate); err == nil {
-			if existing.RequestHash != digest {
+	id, mapped := s.allocator.lookup(policy.Namespace, owner, "vm", identity)
+	if mapped {
+		if existing, err := s.backend.GetVM(r.Context(), policy, owner, id); err == nil {
+			if existing.IdentityHash != identity || existing.RequestHash != digest {
 				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
 				return
 			}
@@ -242,6 +261,10 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 			return
 		}
 	}
+	if err := s.backend.ValidateVM(r.Context(), policy, req); err != nil {
+		backendError(w, err)
+		return
+	}
 	count, err := s.backend.CountVMs(r.Context(), policy)
 	if err != nil {
 		backendError(w, err)
@@ -251,7 +274,16 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		writeError(w, http.StatusConflict, "quota_exceeded", "active VM quota reached")
 		return
 	}
-	item, err := s.backend.CreateVM(r.Context(), policy, owner, id, req, time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), digest)
+	if !mapped {
+		id, err = s.allocator.reserve(policy.Namespace, owner, "vm", identity)
+		if err != nil {
+			backendError(w, err)
+			return
+		}
+	}
+	metadata := ResourceMetadata{IdentityHash: identity, RequestHash: digest}
+	item, err := s.backend.CreateVM(r.Context(), policy, owner, id, req,
+		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), metadata)
 	if err != nil {
 		backendError(w, err)
 		return
@@ -340,15 +372,17 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 	if !ok {
 		return
 	}
-	id, digest := resourceIdentity(owner, "volume", key, req)
+	identity := allocationIdentity(owner, "volume", key)
+	digest := requestHash(req)
 	r, finish, ok := s.beginRequestOperation(w, r)
 	if !ok {
 		return
 	}
 	defer finish()
-	for _, candidate := range append([]string{id}, legacyResourceIDs(owner, "volume", key)...) {
-		if existing, err := s.backend.GetVolume(r.Context(), policy, owner, candidate); err == nil {
-			if existing.RequestHash != digest {
+	id, mapped := s.allocator.lookup(policy.Namespace, owner, "volume", identity)
+	if mapped {
+		if existing, err := s.backend.GetVolume(r.Context(), policy, owner, id); err == nil {
+			if existing.IdentityHash != identity || existing.RequestHash != digest {
 				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
 				return
 			}
@@ -368,7 +402,16 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		writeError(w, http.StatusConflict, "quota_exceeded", "active volume quota reached")
 		return
 	}
-	item, err := s.backend.CreateVolume(r.Context(), policy, owner, id, req, time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), digest)
+	if !mapped {
+		id, err = s.allocator.reserve(policy.Namespace, owner, "volume", identity)
+		if err != nil {
+			backendError(w, err)
+			return
+		}
+	}
+	metadata := ResourceMetadata{IdentityHash: identity, RequestHash: digest}
+	item, err := s.backend.CreateVolume(r.Context(), policy, owner, id, req,
+		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), metadata)
 	if err != nil {
 		backendError(w, err)
 		return
@@ -465,24 +508,6 @@ func validQuantity(value, maximum string) bool {
 	}
 	max, err := resource.ParseQuantity(maximum)
 	return err == nil && quantity.Cmp(max) <= 0
-}
-
-func resourceIdentity(owner auth.Owner, kind, key string, request any) (string, string) {
-	data, _ := json.Marshal(request)
-	digest := sha256.Sum256(data)
-	return resourceID(owner, kind, key, "runner-gw-", 10), hex.EncodeToString(digest[:])
-}
-
-func legacyResourceIDs(owner auth.Owner, kind, key string) []string {
-	return []string{
-		resourceID(owner, kind, key, "hrgw-", 10),
-		resourceID(owner, kind, key, "rgw-", 15),
-	}
-}
-
-func resourceID(owner auth.Owner, kind, key, prefix string, hashBytes int) string {
-	identity := sha256.Sum256([]byte(owner.RepositoryID + "/" + owner.RunID + "/" + owner.RunAttempt + "/" + kind + "/" + key))
-	return prefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(identity[:hashBytes]))
 }
 
 func idempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {

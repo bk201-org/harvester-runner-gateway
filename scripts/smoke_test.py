@@ -41,12 +41,12 @@ if os.environ.get("FAKE_FAIL_ATTACH") == "1" and args[:2] == ["vm", "attach"]:
     print("gateway HTTP 422: invalid_resource: simulated attach failure", file=sys.stderr)
     sys.exit(1)
 if args[:2] == ["vm", "create"]:
-    print(json.dumps({"id": "runner-gw-vm", "ready": True, "ipAddresses": ["10.0.0.10"]}))
+    print(json.dumps({"id": "ci-123-local-smoke-a1-001", "ready": True, "ipAddresses": ["10.0.0.10"]}))
 elif args[:2] == ["volume", "create"]:
-    print(json.dumps({"id": "runner-gw-volume"}))
-elif args == ["vm", "get", "runner-gw-vm"]:
+    print(json.dumps({"id": "ci-123-local-smoke-a1-001"}))
+elif args == ["vm", "get", "ci-123-local-smoke-a1-001"]:
     print(json.dumps({"phase": "Running", "powerState": state["power"]}))
-elif args == ["volume", "get", "runner-gw-volume"]:
+elif args == ["volume", "get", "ci-123-local-smoke-a1-001"]:
     print(json.dumps({"phase": "Bound", "attachmentPhase": "Ready", "attachedTo": None}))
 '''
 
@@ -174,8 +174,8 @@ class SmokeScriptTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("simulated attach failure", result.stderr)
         commands = [item["args"] for item in self.requests()]
-        self.assertIn(["volume", "delete", "runner-gw-volume"], commands)
-        self.assertIn(["vm", "delete", "runner-gw-vm"], commands)
+        self.assertIn(["volume", "delete", "ci-123-local-smoke-a1-001"], commands)
+        self.assertIn(["vm", "delete", "ci-123-local-smoke-a1-001"], commands)
 
     def test_missing_client_fails_before_resource_operations(self):
         result = self.run_smoke(GATEWAY_CLIENT="/not/a/client")
