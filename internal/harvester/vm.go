@@ -202,19 +202,8 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 	secretCreated := false
 	if _, err := b.kube.CoreV1().Secrets(policy.Namespace).Create(ctx, secret(policy.Namespace, secretName, secretLabels, values, userData), metav1.CreateOptions{}); err == nil {
 		secretCreated = true
-	} else {
-		existing, getErr := b.kube.CoreV1().Secrets(policy.Namespace).Get(ctx, secretName, metav1.GetOptions{})
-		if getErr != nil {
-			return gateway.VMStatus{}, translate(err)
-		}
-		if existing.DeletionTimestamp != nil || !matchingRecovery(existing.Labels, existing.Annotations, owner, "cloud-init", metadata) {
-			return gateway.VMStatus{}, fmt.Errorf("%w: cloud-init Secret name is occupied or deleting", gateway.ErrConflict)
-		}
-		copy := existing.DeepCopy()
-		copy.Annotations[expiresKey] = values[expiresKey]
-		if _, updateErr := b.kube.CoreV1().Secrets(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{}); updateErr != nil {
-			return gateway.VMStatus{}, translate(updateErr)
-		}
+	} else if recoveryErr := b.recoverCloudInitSecret(ctx, policy, owner, secretName, values[expiresKey], metadata, err); recoveryErr != nil {
+		return gateway.VMStatus{}, recoveryErr
 	}
 	vm, err := buildVM(policy.Namespace, id, req, storageClass, labels, values)
 	if err != nil {
@@ -255,6 +244,25 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 		return gateway.VMStatus{}, fmt.Errorf("start VM: %w", err)
 	}
 	return b.vmStatus(ctx, policy.Namespace, created)
+}
+
+func (b *Backend) recoverCloudInitSecret(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, name, expires string, metadata gateway.ResourceMetadata, createErr error) error {
+	return retryOnConflict(func() error {
+		existing, err := b.kube.CoreV1().Secrets(policy.Namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return createErr
+			}
+			return err
+		}
+		if existing.DeletionTimestamp != nil || !matchingRecovery(existing.Labels, existing.Annotations, owner, "cloud-init", metadata) {
+			return fmt.Errorf("%w: cloud-init Secret name is occupied or deleting", gateway.ErrConflict)
+		}
+		copy := existing.DeepCopy()
+		copy.Annotations[expiresKey] = expires
+		_, err = b.kube.CoreV1().Secrets(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{})
+		return err
+	})
 }
 
 func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, labels, values map[string]string) (*unstructured.Unstructured, error) {
@@ -336,20 +344,27 @@ func conditionTrue(obj *unstructured.Unstructured, kind string) bool {
 }
 
 func (b *Backend) DeleteVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string) error {
-	vm, err := b.getOwnedVM(ctx, policy, owner, id)
+	rootName := id + "-root"
+	err := retryOnConflict(func() error {
+		vm, err := b.getOwnedVM(ctx, policy, owner, id)
+		if err != nil {
+			return err
+		}
+		copy := vm.DeepCopy()
+		values := copy.GetAnnotations()
+		if values == nil {
+			values = map[string]string{}
+		}
+		values[removedKey] = rootName
+		copy.SetAnnotations(values)
+		_, err = b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	})
 	if err != nil {
 		return err
-	}
-	rootName := id + "-root"
-	copy := vm.DeepCopy()
-	values := copy.GetAnnotations()
-	if values == nil {
-		values = map[string]string{}
-	}
-	values[removedKey] = rootName
-	copy.SetAnnotations(values)
-	if _, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return translate(err)
 	}
 	foreground := metav1.DeletePropagationForeground
 	if err := deleteIgnoringMissing(b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Delete(ctx, id, metav1.DeleteOptions{PropagationPolicy: &foreground})); err != nil {

@@ -6,11 +6,16 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
 	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
+
+func retryOnConflict(operation func() error) error {
+	return translate(retry.RetryOnConflict(retry.DefaultRetry, operation))
+}
 
 func matchingRecovery(labels, values map[string]string, owner auth.Owner, kind string, metadata gateway.ResourceMetadata) bool {
 	return owned(labels, owner, kind) && values[identityKey] == metadata.IdentityHash && values[hashKey] == metadata.RequestHash

@@ -274,8 +274,7 @@ func (b *Backend) AttachVolume(ctx context.Context, policy config.RepositoryPoli
 }
 
 func (b *Backend) DetachVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, vmID, volumeID string) error {
-	vm, err := b.getOwnedVM(ctx, policy, owner, vmID)
-	if err != nil {
+	if _, err := b.getOwnedVM(ctx, policy, owner, vmID); err != nil {
 		return err
 	}
 	if _, err := b.getOwnedVolume(ctx, policy, owner, volumeID); err != nil {
@@ -293,16 +292,19 @@ func (b *Backend) DetachVolume(ctx context.Context, policy config.RepositoryPoli
 	}
 	_, err = b.dynamic.Resource(vmiGVR).Namespace(policy.Namespace).Get(ctx, vmID, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		copy := vm.DeepCopy()
-		changed, err := removeOfflineVolume(copy, volumeID)
-		if err != nil {
+		return retryOnConflict(func() error {
+			vm, err := b.getOwnedVM(ctx, policy, owner, vmID)
+			if err != nil {
+				return err
+			}
+			copy := vm.DeepCopy()
+			changed, err := removeOfflineVolume(copy, volumeID)
+			if err != nil || !changed {
+				return err
+			}
+			_, err = b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{})
 			return err
-		}
-		if !changed {
-			return nil
-		}
-		_, err = b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{})
-		return translate(err)
+		})
 	}
 	if err != nil {
 		return err
