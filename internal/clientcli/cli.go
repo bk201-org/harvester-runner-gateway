@@ -20,7 +20,7 @@ import (
 )
 
 const defaultVMWaitTimeout = 5 * time.Minute
-const vmPollInterval = 3 * time.Second
+const vmPollInterval = 10 * time.Second
 
 type command struct {
 	kind, action, id, second string

@@ -133,7 +133,7 @@ Commands whose API response has no body produce no output on success.
 VM creation requires `--image`, `--network`, `--cpu`, `--memory`,
 `--boot-disk-size`, and `--idempotency-key`. Optional inputs are repeatable
 `--ssh-public-key-file` (up to 10 keys), `--user-data-file` (cloud-config up to
-64 KiB), and `--ttl-seconds`. By default, the command polls every three seconds
+64 KiB), and `--ttl-seconds`. By default, the command polls every ten seconds
 for up to five minutes and prints the final status only after `ready` is true.
 Use `--wait-timeout` or `GATEWAY_VM_WAIT_TIMEOUT` to change that limit, or
 `--no-wait` to return the initial asynchronous API response. The normal

@@ -76,7 +76,7 @@ For the Multus bridge network, reliable IP reporting requires QEMU Guest Agent
 in the approved image.
 
 The HTTP create API remains asynchronous. The bundled CLI polls VM status every
-three seconds by default and returns when `ready` becomes true.
+ten seconds by default and returns when `ready` becomes true.
 
 ## Quota and lifecycle
 
