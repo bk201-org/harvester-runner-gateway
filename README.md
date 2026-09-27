@@ -122,7 +122,7 @@ Commands whose API response has no body produce no output on success.
 | `vm create [flags]` | Create a VM and wait for a running VMI with a usable IP |
 | `vm list` | List run-owned VMs |
 | `vm get ID` | Get VM status |
-| `vm delete ID` | Request VM deletion |
+| `vm delete ID` | Request deletion of the VM and its attached volumes |
 | `vm power ID on` / `vm power ID off` | Set desired power state |
 | `vm reboot ID` | Request reboot |
 | `vm attach ID VOLUME_ID` | Request live volume attachment |
@@ -276,9 +276,10 @@ active gateway instance is still required for serialized quota checks.
 Resources expire after six hours by default, or after the requested TTL up to
 24 hours. A reconciler checks every minute, deleting expired VMs, boot disks,
 cloud-init Secrets, and independent volumes. An attached volume that expires
-first is detached and then deleted. Deleting a VM does not delete independent
-volumes attached to it. GET status may show no IP address until the VM reports
-one; it does not prove SSH or a guest service is ready.
+first is detached and then deleted. Deleting a VM also deletes its attached
+independent volumes; detached independent volumes keep their own TTL. GET status
+may show no IP address until the VM reports one; it does not prove SSH or a
+guest service is ready.
 
 ## Live smoke test
 
@@ -286,8 +287,10 @@ Unit tests and builds run without a cluster. Live creation, actions, hotplug,
 and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
 before production use. The [smoke script](scripts/smoke.sh) launches the Go smoke
 runner, which defaults to three concurrent workers. Every worker creates a VM
-and independent volume, exercises hotplug, power, and reboot, and cleans up both.
-The runner polls VM and volume status every ten seconds by default.
+and an independent volume, exercises hotplug, explicit detach and deletion,
+power, and reboot. It then attaches a second volume, deletes the VM, and waits
+for both the VM and attached volume to disappear. The runner polls VM and volume
+status every ten seconds by default.
 The runner checks that enough VM and volume quota is available before creating
 anything. Build it with `make build`; set `GATEWAY_SMOKE_BINARY` to select a
 binary outside `bin/`. The selected policy must have at least three available

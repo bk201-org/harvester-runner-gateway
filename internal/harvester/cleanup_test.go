@@ -122,3 +122,60 @@ func TestRecoverCloudInitSecretChecksExpiry(t *testing.T) {
 		t.Fatalf("Secret changed: %v, %v", got, err)
 	}
 }
+
+func TestDeleteVMRemovesOnlyAttachedOwnedVolumes(t *testing.T) {
+	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
+	otherOwner := auth.Owner{RepositoryID: "123", RunID: "other", RunAttempt: "1"}
+	policy := config.RepositoryPolicy{RepositoryID: owner.RepositoryID, Namespace: "ci"}
+	vmID := testResourceID(owner, 1)
+	attachedID := testResourceID(owner, 1, "volume")
+	unownedID := testResourceID(owner, 2, "volume")
+	vmiOnlyID := testResourceID(owner, 3, "volume")
+	detachedID := testResourceID(owner, 4, "volume")
+	claim := func(name string) map[string]any {
+		return map[string]any{"name": name, "persistentVolumeClaim": map[string]any{"claimName": name}}
+	}
+	vm := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
+		"metadata": map[string]any{"name": vmID, "namespace": "ci", "labels": stringMap(ownerLabels(owner, "vm"))},
+		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
+			"volumes": []any{claim(vmID + "-root"), claim(attachedID), claim(unownedID)},
+		}}},
+	}}
+	vmi := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachineInstance",
+		"metadata": map[string]any{"name": vmID, "namespace": "ci"},
+		"spec":     map[string]any{"volumes": []any{claim(attachedID), claim(vmiOnlyID)}},
+	}}
+	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList", vmiGVR: "VirtualMachineInstanceList"},
+		vm, vmi,
+	)
+	pvc := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
+		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: "ci", Labels: labels,
+		}}
+	}
+	kube := kubefake.NewClientset(
+		pvc(vmID+"-root", ownerLabels(owner, "vm-root")),
+		pvc(attachedID, ownerLabels(owner, "volume")),
+		pvc(unownedID, ownerLabels(otherOwner, "volume")),
+		pvc(vmiOnlyID, ownerLabels(owner, "volume")),
+		pvc(detachedID, ownerLabels(owner, "volume")),
+	)
+	backend := &Backend{dynamic: dynamicClient, kube: kube}
+	if err := backend.DeleteVM(context.Background(), policy, owner, vmID); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{vmID + "-root", attachedID, vmiOnlyID} {
+		if _, err := kube.CoreV1().PersistentVolumeClaims("ci").Get(context.Background(), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Errorf("PVC %s should be deleted: %v", name, err)
+		}
+	}
+	for _, name := range []string{unownedID, detachedID} {
+		if _, err := kube.CoreV1().PersistentVolumeClaims("ci").Get(context.Background(), name, metav1.GetOptions{}); err != nil {
+			t.Errorf("PVC %s should remain: %v", name, err)
+		}
+	}
+}

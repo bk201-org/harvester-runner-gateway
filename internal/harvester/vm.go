@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -346,11 +347,13 @@ func conditionTrue(obj *unstructured.Unstructured, kind string) bool {
 
 func (b *Backend) DeleteVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string) error {
 	rootName := id + "-root"
+	var volumeNames []string
 	err := retryOnConflict(func() error {
 		vm, err := b.getOwnedVM(ctx, policy, owner, id)
 		if err != nil {
 			return err
 		}
+		volumeNames = vmVolumeClaims(vm)
 		copy := vm.DeepCopy()
 		values := copy.GetAnnotations()
 		if values == nil {
@@ -367,14 +370,48 @@ func (b *Backend) DeleteVM(ctx context.Context, policy config.RepositoryPolicy, 
 	if err != nil {
 		return err
 	}
+	vmi, err := b.dynamic.Resource(vmiGVR).Namespace(policy.Namespace).Get(ctx, id, metav1.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err == nil {
+		volumes, _, _ := unstructured.NestedSlice(vmi.Object, "spec", "volumes")
+		volumeNames = append(volumeNames, claimNames(volumes)...)
+	}
+	seen := map[string]bool{}
+	var attachedVolumes []*corev1.PersistentVolumeClaim
+	for _, name := range volumeNames {
+		if name == rootName || seen[name] {
+			continue
+		}
+		seen[name] = true
+		pvc, err := b.getOwnedVolume(ctx, policy, owner, name)
+		if isMissing(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		attachedVolumes = append(attachedVolumes, pvc)
+	}
 	foreground := metav1.DeletePropagationForeground
 	if err := deleteIgnoringMissing(b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Delete(ctx, id, metav1.DeleteOptions{PropagationPolicy: &foreground})); err != nil {
 		return err
 	}
-	if err := deleteIgnoringMissing(b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Delete(ctx, rootName, metav1.DeleteOptions{})); err != nil {
-		return err
+	var problems []error
+	for _, pvc := range attachedVolumes {
+		options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &pvc.UID}}
+		if err := deleteIgnoringMissing(b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Delete(ctx, pvc.Name, options)); err != nil {
+			problems = append(problems, fmt.Errorf("delete attached PVC %s: %w", pvc.Name, err))
+		}
 	}
-	return deleteIgnoringMissing(b.kube.CoreV1().Secrets(policy.Namespace).Delete(ctx, id+"-init", metav1.DeleteOptions{}))
+	if err := deleteIgnoringMissing(b.kube.CoreV1().PersistentVolumeClaims(policy.Namespace).Delete(ctx, rootName, metav1.DeleteOptions{})); err != nil {
+		problems = append(problems, fmt.Errorf("delete root PVC %s: %w", rootName, err))
+	}
+	if err := deleteIgnoringMissing(b.kube.CoreV1().Secrets(policy.Namespace).Delete(ctx, id+"-init", metav1.DeleteOptions{})); err != nil {
+		problems = append(problems, fmt.Errorf("delete cloud-init Secret: %w", err))
+	}
+	return errors.Join(problems...)
 }
 
 func (b *Backend) PowerVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id, state string) error {
@@ -413,6 +450,10 @@ func isMissing(err error) bool {
 
 func vmClaimNames(vm *unstructured.Unstructured) []string {
 	volumes, _, _ := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes")
+	return claimNames(volumes)
+}
+
+func claimNames(volumes []any) []string {
 	var names []string
 	for _, raw := range volumes {
 		volume, ok := raw.(map[string]any)

@@ -31,6 +31,7 @@ type fakeGateway struct {
 	nextVM        int
 	nextVolume    int
 	power         map[string]string
+	volumes       map[string]bool
 	attached      map[string]string
 	calls         map[string]int
 }
@@ -38,7 +39,8 @@ type fakeGateway struct {
 func newFakeGateway(createTarget int) *fakeGateway {
 	return &fakeGateway{
 		createTarget: createTarget, createGate: make(chan struct{}), maxVMs: 3, maxVolumes: 3,
-		power: make(map[string]string), attached: make(map[string]string), calls: make(map[string]int),
+		power: make(map[string]string), volumes: make(map[string]bool),
+		attached: make(map[string]string), calls: make(map[string]int),
 	}
 }
 
@@ -69,13 +71,34 @@ func (f *fakeGateway) handler(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, client.VMStatus{ID: id, Phase: "Running", PowerState: "on", Ready: true, IPAddresses: []string{"10.0.0.10"}})
 		return
 	}
+	if r.URL.Path == "/v1/vms" && r.Method == http.MethodGet {
+		f.mu.Lock()
+		items := make([]client.VMStatus, 0, len(f.power))
+		for id, power := range f.power {
+			items = append(items, client.VMStatus{ID: id, Phase: "Running", PowerState: power})
+		}
+		f.mu.Unlock()
+		writeTestJSON(w, items)
+		return
+	}
 	if r.URL.Path == "/v1/volumes" && r.Method == http.MethodPost {
 		f.mu.Lock()
 		f.nextVolume++
 		id := fmt.Sprintf("vol%d", f.nextVolume)
+		f.volumes[id] = true
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, client.VolumeStatus{ID: id, Phase: "Bound", Size: "1Gi"})
+		return
+	}
+	if r.URL.Path == "/v1/volumes" && r.Method == http.MethodGet {
+		f.mu.Lock()
+		items := make([]client.VolumeStatus, 0, len(f.volumes))
+		for id := range f.volumes {
+			items = append(items, client.VolumeStatus{ID: id, Phase: "Bound", Size: "1Gi"})
+		}
+		f.mu.Unlock()
+		writeTestJSON(w, items)
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -90,6 +113,12 @@ func (f *fakeGateway) handler(w http.ResponseWriter, r *http.Request) {
 		case http.MethodDelete:
 			f.mu.Lock()
 			delete(f.power, id)
+			for volumeID, vmID := range f.attached {
+				if vmID == id {
+					delete(f.attached, volumeID)
+					delete(f.volumes, volumeID)
+				}
+			}
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		}
@@ -137,7 +166,13 @@ func (f *fakeGateway) handler(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			f.mu.Lock()
 			vmID := f.attached[id]
+			exists := f.volumes[id]
 			f.mu.Unlock()
+			if !exists {
+				w.WriteHeader(http.StatusNotFound)
+				writeTestJSON(w, map[string]string{"code": "not_found", "message": "volume not found"})
+				return
+			}
 			phase := ""
 			if vmID != "" {
 				phase = "Ready"
@@ -146,6 +181,7 @@ func (f *fakeGateway) handler(w http.ResponseWriter, r *http.Request) {
 		case http.MethodDelete:
 			f.mu.Lock()
 			delete(f.attached, id)
+			delete(f.volumes, id)
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		}
@@ -194,18 +230,28 @@ func TestConcurrentFullLifecycles(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if fake.createStarted != 3 || fake.nextVM != 3 || fake.nextVolume != 3 {
+	if fake.createStarted != 3 || fake.nextVM != 3 || fake.nextVolume != 6 {
 		t.Fatalf("creates=%d VMs=%d volumes=%d", fake.createStarted, fake.nextVM, fake.nextVolume)
 	}
-	if len(fake.power) != 0 || len(fake.attached) != 0 {
-		t.Fatalf("resources remain: VMs=%v volumes=%v", fake.power, fake.attached)
+	if len(fake.power) != 0 || len(fake.volumes) != 0 || len(fake.attached) != 0 {
+		t.Fatalf("resources remain: VMs=%v volumes=%v attachments=%v", fake.power, fake.volumes, fake.attached)
 	}
 	for _, operation := range []string{
 		"POST /v1/vms", "POST /v1/volumes", "PUT /v1/vms/vm1/power", "POST /v1/vms/vm1/reboot",
+		"GET /v1/vms", "GET /v1/volumes",
 	} {
 		if fake.calls[operation] == 0 {
 			t.Errorf("operation not exercised: %s", operation)
 		}
+	}
+	volumeDeletes := 0
+	for operation, count := range fake.calls {
+		if strings.HasPrefix(operation, "DELETE /v1/volumes/") {
+			volumeDeletes += count
+		}
+	}
+	if volumeDeletes != 3 {
+		t.Fatalf("explicit volume deletes = %d, want 3; attached volumes should be removed with their VMs", volumeDeletes)
 	}
 }
 
@@ -245,9 +291,9 @@ func TestFailureCleansUpCreatedResources(t *testing.T) {
 			volumeDeletes += count
 		}
 	}
-	if vmDeletes != 3 || volumeDeletes != 3 || len(fake.power) != 0 || len(fake.attached) != 0 {
-		t.Fatalf("VM deletes=%d volume deletes=%d resources=%v/%v calls=%v",
-			vmDeletes, volumeDeletes, fake.power, fake.attached, fake.calls)
+	if vmDeletes != 3 || volumeDeletes != 3 || len(fake.power) != 0 || len(fake.volumes) != 0 || len(fake.attached) != 0 {
+		t.Fatalf("VM deletes=%d volume deletes=%d resources=%v/%v/%v calls=%v",
+			vmDeletes, volumeDeletes, fake.power, fake.volumes, fake.attached, fake.calls)
 	}
 }
 

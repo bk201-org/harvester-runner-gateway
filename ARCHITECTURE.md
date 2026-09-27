@@ -103,7 +103,7 @@ cluster resources and removes expired VMs, volumes, boot disks, and cloud-init
 Secrets. If an independent
 volume is still attached when it expires, cleanup first requests detach and
 deletes it on a later pass. This scan also lets cleanup resume after
-a gateway restart. Deleting a VM does not delete its independent volumes.
+a gateway restart. Deleting a VM also deletes its attached independent volumes.
 
 ## Code map
 

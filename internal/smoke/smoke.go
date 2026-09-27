@@ -315,6 +315,9 @@ func runWorker(ctx context.Context, api *client.Client, cfg config, state worker
 	if err := api.DeleteVolume(ctx, state.volumeID); err != nil {
 		return fmt.Errorf("delete volume: %w", err)
 	}
+	if err := waitForVolumeGone(ctx, api, state.volumeID, cfg); err != nil {
+		return fmt.Errorf("wait for explicit volume deletion: %w", err)
+	}
 	state.volumeID = ""
 
 	if err := api.SetVMPower(ctx, state.vmID, client.PowerOff); err != nil {
@@ -336,10 +339,38 @@ func runWorker(ctx context.Context, api *client.Client, cfg config, state worker
 	if err := api.RebootVM(ctx, state.vmID); err != nil {
 		return fmt.Errorf("reboot VM: %w", err)
 	}
+
+	attachedVolume, err := api.CreateVolume(ctx, volumeRequest)
+	if err != nil {
+		return fmt.Errorf("create volume for VM deletion: %w", err)
+	}
+	state.volumeID = attachedVolume.ID
+	if err := waitForVolume(ctx, api, state.volumeID, cfg, func(status client.VolumeStatus) bool {
+		return status.Phase == "Bound"
+	}); err != nil {
+		return fmt.Errorf("wait for attached volume Bound: %w", err)
+	}
+	state.attached = true
+	if err := api.AttachVolume(ctx, state.vmID, state.volumeID); err != nil {
+		return fmt.Errorf("attach volume for VM deletion: %w", err)
+	}
+	if err := waitForVolume(ctx, api, state.volumeID, cfg, func(status client.VolumeStatus) bool {
+		return status.AttachedTo == state.vmID && status.AttachmentPhase == "Ready"
+	}); err != nil {
+		return fmt.Errorf("wait for volume attachment before VM deletion: %w", err)
+	}
 	if err := api.DeleteVM(ctx, state.vmID); err != nil {
-		return fmt.Errorf("delete VM: %w", err)
+		return fmt.Errorf("delete VM with attached volume: %w", err)
+	}
+	if err := waitForVMGone(ctx, api, state.vmID, cfg); err != nil {
+		return fmt.Errorf("wait for VM deletion: %w", err)
 	}
 	state.vmID = ""
+	state.attached = false
+	if err := waitForVolumeGone(ctx, api, state.volumeID, cfg); err != nil {
+		return fmt.Errorf("wait for attached volume deletion: %w", err)
+	}
+	state.volumeID = ""
 	logger.InfoContext(ctx, "smoke worker completed")
 	return nil
 }
@@ -359,6 +390,40 @@ func waitForVM(ctx context.Context, api *client.Client, id string, cfg config, r
 	return poll(waitCtx, cfg.pollInterval, func() (bool, error) {
 		status, err := api.GetVM(waitCtx, id)
 		return err == nil && ready(status), err
+	})
+}
+
+func waitForVolumeGone(ctx context.Context, api *client.Client, id string, cfg config) error {
+	waitCtx, cancel := context.WithTimeout(ctx, cfg.waitTimeout)
+	defer cancel()
+	return poll(waitCtx, cfg.pollInterval, func() (bool, error) {
+		volumes, err := api.ListVolumes(waitCtx)
+		if err != nil {
+			return false, err
+		}
+		for _, volume := range volumes {
+			if volume.ID == id {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+}
+
+func waitForVMGone(ctx context.Context, api *client.Client, id string, cfg config) error {
+	waitCtx, cancel := context.WithTimeout(ctx, cfg.waitTimeout)
+	defer cancel()
+	return poll(waitCtx, cfg.pollInterval, func() (bool, error) {
+		vms, err := api.ListVMs(waitCtx)
+		if err != nil {
+			return false, err
+		}
+		for _, vm := range vms {
+			if vm.ID == id {
+				return false, nil
+			}
+		}
+		return true, nil
 	})
 }
 
