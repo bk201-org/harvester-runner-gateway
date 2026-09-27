@@ -8,7 +8,7 @@ cluster credentials. [OpenAPI](openapi.yaml) defines the public API.
 ```mermaid
 flowchart LR
     Job[GitHub Actions job] -->|HTTPS + OIDC token| API[Gateway API]
-    Smoke[Concurrent Go smoke runner] -->|HTTPS + smoke token| API
+    Smoke[Focused Go smoke tests] -->|HTTPS + smoke token| API
     API --> Auth[Token verifier and repository policy]
     API --> Backend[Harvester backend]
     Backend -->|Kubernetes API| Cluster[Harvester cluster]

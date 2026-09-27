@@ -16,13 +16,12 @@ jobs:
       GATEWAY_NETWORK: ${{ vars.GATEWAY_NETWORK }}
       GATEWAY_AUDIENCE: ${{ vars.GATEWAY_AUDIENCE }}
       GATEWAY_CA_CERT: ${{ vars.GATEWAY_CA_CERT }}
-      GATEWAY_SMOKE_CONCURRENCY: ${{ vars.GATEWAY_SMOKE_CONCURRENCY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build gateway and smoke clients
+      - name: Build gateway and client
         run: make build
-      - name: Exercise concurrent VM and volume lifecycles
-        run: ./scripts/smoke.sh
+      - name: Exercise focused VM and volume lifecycles
+        run: go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -v
