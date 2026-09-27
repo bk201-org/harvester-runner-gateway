@@ -17,10 +17,12 @@ import (
 var guestUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 
 const (
-	DefaultIssuer   = "https://token.actions.githubusercontent.com"
-	DefaultAudience = "api://harvester-runner-gateway"
-	DefaultTTL      = 6 * time.Hour
-	MaximumTTL      = 24 * time.Hour
+	DefaultIssuer       = "https://token.actions.githubusercontent.com"
+	DefaultAudience     = "api://harvester-runner-gateway"
+	DefaultVMPrefix     = "ci-vm-"
+	DefaultVolumePrefix = "ci-vol-"
+	DefaultTTL          = 6 * time.Hour
+	MaximumTTL          = 24 * time.Hour
 )
 
 type Config struct {
@@ -29,6 +31,8 @@ type Config struct {
 	Kubeconfig    string             `json:"kubeconfig"`
 	KubeContext   string             `json:"kubeContext"`
 	Database      DatabaseConfig     `json:"database"`
+	VMPrefix      string             `json:"vmPrefix"`
+	VolumePrefix  string             `json:"volumePrefix"`
 	OIDC          OIDCConfig         `json:"oidc"`
 	LocalSmoke    LocalSmokeConfig   `json:"localSmoke"`
 	Repositories  []RepositoryPolicy `json:"repositories"`
@@ -36,6 +40,33 @@ type Config struct {
 
 type DatabaseConfig struct {
 	Path string `json:"path"`
+}
+
+type IDPrefixes struct {
+	VM     string
+	Volume string
+}
+
+func (c Config) IDPrefixes() IDPrefixes {
+	vm, volume := c.VMPrefix, c.VolumePrefix
+	if vm == "" {
+		vm = DefaultVMPrefix
+	}
+	if volume == "" {
+		volume = DefaultVolumePrefix
+	}
+	return IDPrefixes{VM: vm, Volume: volume}
+}
+
+func (p IDPrefixes) ForKind(kind string) string {
+	switch kind {
+	case "vm":
+		return p.VM
+	case "volume":
+		return p.Volume
+	default:
+		return ""
+	}
 }
 
 type TLSConfig struct {
@@ -90,6 +121,21 @@ func Load(path string) (Config, error) {
 }
 
 func (c *Config) Validate() error {
+	prefixes := c.IDPrefixes()
+	c.VMPrefix, c.VolumePrefix = prefixes.VM, prefixes.Volume
+	if c.VMPrefix == c.VolumePrefix {
+		return fmt.Errorf("vmPrefix and volumePrefix must differ")
+	}
+	for name, prefix := range map[string]string{"vmPrefix": c.VMPrefix, "volumePrefix": c.VolumePrefix} {
+		dependentSuffix := 0
+		if name == "vmPrefix" {
+			dependentSuffix = len("-root")
+		}
+		if !strings.HasSuffix(prefix, "-") || len(validation.IsDNS1123Label(strings.TrimSuffix(prefix, "-"))) != 0 ||
+			len(prefix)+16+dependentSuffix > 63 {
+			return fmt.Errorf("%s must be a lowercase DNS-safe prefix ending in '-' and leave room for a resource ID", name)
+		}
+	}
 	if c.ListenAddress == "" {
 		c.ListenAddress = ":8443"
 	}

@@ -27,6 +27,7 @@ type Owner struct {
 	RepositoryID string
 	RunID        string
 	RunAttempt   string
+	WorkflowRef  string
 }
 
 type Verifier struct {
@@ -76,7 +77,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string, cfg config.Config) (O
 		!contains(policy.AllowedEvents, claimString(claims["event_name"])) {
 		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
 	}
-	owner := Owner{RepositoryID: repoID, RunID: claimString(claims["run_id"]), RunAttempt: claimString(claims["run_attempt"])}
+	owner := Owner{RepositoryID: repoID, RunID: claimString(claims["run_id"]), RunAttempt: claimString(claims["run_attempt"]), WorkflowRef: claimString(claims["workflow_ref"])}
 	if !decimal(owner.RepositoryID) || !decimal(owner.RunID) || !decimal(owner.RunAttempt) {
 		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
 	}

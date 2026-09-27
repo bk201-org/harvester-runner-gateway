@@ -257,9 +257,9 @@ func TestVMCreateNoWaitAndReady(t *testing.T) {
 		response string
 	}{
 		{name: "no wait", args: append(append([]string{}, base...), "--no-wait"), status: http.StatusCreated,
-			response: `{"id":"ci-123-456-a1-001","phase":"Provisioning","powerState":"on","ready":false,"ipAddresses":[],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
+			response: `{"id":"ci-vm-00000001","phase":"Provisioning","powerState":"on","ready":false,"ipAddresses":[],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
 		{name: "ready", args: base, status: http.StatusCreated,
-			response: `{"id":"ci-123-456-a1-001","phase":"Running","powerState":"on","ready":true,"ipAddresses":["10.0.0.10"],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
+			response: `{"id":"ci-vm-00000001","phase":"Running","powerState":"on","ready":true,"ipAddresses":["10.0.0.10"],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

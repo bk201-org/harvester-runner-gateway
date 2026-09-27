@@ -32,7 +32,7 @@ func TestListAllocationsRecoversAllResourceKinds(t *testing.T) {
 	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		vmGVR: "VirtualMachineList", vmiGVR: "VirtualMachineInstanceList",
 	}, vm, vmi)
-	volumeID := testResourceID(owner, 3)
+	volumeID := testResourceID(owner, 3, "volume")
 	rootID := testResourceID(owner, 5)
 	secretID := testResourceID(owner, 6)
 	kube := kubefake.NewClientset(

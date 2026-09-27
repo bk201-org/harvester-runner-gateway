@@ -169,24 +169,24 @@ components:
       required: true
       schema:
         type: string
-        pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
-        example: ci-123456789-1658821493-a2-001
+        description: Configured kind prefix followed by at least eight lowercase hex digits.
+        example: ci-vm-00000001
     VolumeID:
       name: id
       in: path
       required: true
       schema:
         type: string
-        pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
-        example: ci-123456789-1658821493-a2-001
+        description: Configured kind prefix followed by at least eight lowercase hex digits.
+        example: ci-vol-00000001
     AttachedVolumeID:
       name: volumeID
       in: path
       required: true
       schema:
         type: string
-        pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
-        example: ci-123456789-1658821493-a2-001
+        description: Configured kind prefix followed by at least eight lowercase hex digits.
+        example: ci-vol-00000001
   schemas:
     VMRequest:
       type: object
@@ -215,7 +215,7 @@ components:
       type: object
       required: [id, phase, powerState, ready, ipAddresses, attachedVolumeIDs, expiresAt]
       properties:
-        id: {type: string, example: ci-123456789-1658821493-a2-001}
+        id: {type: string, example: ci-vm-00000001}
         phase: {type: string}
         powerState: {type: string, enum: ["on", "off"]}
         ready: {type: boolean, description: VMI is Running and nic-1 has a usable IP address}
@@ -231,7 +231,7 @@ components:
       type: object
       required: [id, phase, size, expiresAt]
       properties:
-        id: {type: string, example: ci-123456789-1658821493-a2-001}
+        id: {type: string, example: ci-vol-00000001}
         phase: {type: string}
         size: {type: string}
         attachedTo: {type: string}

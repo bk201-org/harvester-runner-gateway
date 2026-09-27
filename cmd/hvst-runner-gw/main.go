@@ -55,7 +55,7 @@ func run(path string, logger *slog.Logger) error {
 		return fmt.Errorf("Harvester preflight: %w", err)
 	}
 	logger.Info("Harvester preflight completed")
-	store, err := gateway.OpenSQLiteAllocationStore(ctx, cfg.Database.Path)
+	store, err := gateway.OpenSQLiteAllocationStore(ctx, cfg.Database.Path, cfg.IDPrefixes())
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,10 @@ import (
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
 )
 
-func testResourceID(owner auth.Owner, sequence int) string {
-	return fmt.Sprintf("ci-%s-%s-a%s-%03d", owner.RepositoryID, owner.RunID, owner.RunAttempt, sequence)
+func testResourceID(_ auth.Owner, sequence int, kind ...string) string {
+	prefix := "ci-vm-"
+	if len(kind) != 0 && kind[0] == "volume" {
+		prefix = "ci-vol-"
+	}
+	return fmt.Sprintf("%s%08x", prefix, sequence)
 }

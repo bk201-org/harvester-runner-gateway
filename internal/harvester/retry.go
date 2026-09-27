@@ -19,7 +19,7 @@ func retryOnConflict(operation func() error) error {
 
 // matchingCreate checks the result of an uncertain Kubernetes write for a newly reserved ID.
 func matchingCreate(labels, values map[string]string, owner auth.Owner, kind, expires string) bool {
-	return owned(labels, owner, kind) && values[expiresKey] == expires
+	return owned(labels, owner, kind) && values[expiresKey] == expires && values[workflowRefKey] == owner.WorkflowRef
 }
 
 func (b *Backend) verifyVMDependencies(ctx context.Context, policy config.RepositoryPolicy, id string) error {

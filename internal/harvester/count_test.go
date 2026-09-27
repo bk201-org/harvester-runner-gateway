@@ -31,11 +31,11 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 		map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList"},
 		vm(testResourceID(owner, 1), ownerLabels(owner, "vm")),
 		vm(testResourceID(owner, 2), ownerLabels(owner, "vm")),
-		vm(testResourceID(otherRun, 1), ownerLabels(otherRun, "vm")),
-		vm(testResourceID(otherAttempt, 1), ownerLabels(otherAttempt, "vm")),
-		vm(testResourceID(otherRepo, 1), ownerLabels(otherRepo, "vm")),
-		vm(testResourceID(owner, 3), ownerLabels(owner, "other")),
-		vm(testResourceID(owner, 4), map[string]string{repoLabel: owner.RepositoryID, kindLabel: "vm"}),
+		vm(testResourceID(otherRun, 3), ownerLabels(otherRun, "vm")),
+		vm(testResourceID(otherAttempt, 4), ownerLabels(otherAttempt, "vm")),
+		vm(testResourceID(otherRepo, 5), ownerLabels(otherRepo, "vm")),
+		vm(testResourceID(owner, 6), ownerLabels(owner, "other")),
+		vm(testResourceID(owner, 7), map[string]string{repoLabel: owner.RepositoryID, kindLabel: "vm"}),
 	)
 	pvc := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
 		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
@@ -43,12 +43,12 @@ func TestCountsUseRepositoryObjectsWithoutStatusLookups(t *testing.T) {
 		}}
 	}
 	kube := kubefake.NewClientset(
-		pvc(testResourceID(owner, 1), ownerLabels(owner, "volume")),
-		pvc(testResourceID(otherRun, 1), ownerLabels(otherRun, "volume")),
-		pvc(testResourceID(otherAttempt, 1), ownerLabels(otherAttempt, "volume")),
+		pvc(testResourceID(owner, 1, "volume"), ownerLabels(owner, "volume")),
+		pvc(testResourceID(otherRun, 3, "volume"), ownerLabels(otherRun, "volume")),
+		pvc(testResourceID(otherAttempt, 4, "volume"), ownerLabels(otherAttempt, "volume")),
 		pvc(testResourceID(owner, 2)+"-root", ownerLabels(owner, "vm-root")),
-		pvc(testResourceID(otherRepo, 1), ownerLabels(otherRepo, "volume")),
-		pvc(testResourceID(owner, 3), map[string]string{repoLabel: owner.RepositoryID, kindLabel: "volume"}),
+		pvc(testResourceID(otherRepo, 5, "volume"), ownerLabels(otherRepo, "volume")),
+		pvc(testResourceID(owner, 6, "volume"), map[string]string{repoLabel: owner.RepositoryID, kindLabel: "volume"}),
 	)
 	backend := &Backend{dynamic: dynamicClient, kube: kube}
 	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci"}

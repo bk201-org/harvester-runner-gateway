@@ -35,13 +35,13 @@ func TestRenderCloudConfigMergesSSHKeys(t *testing.T) {
 }
 
 func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
-	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
+	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1", WorkflowRef: "org/repo/.github/workflows/test.yml@refs/heads/main"}
 	labels := ownerLabels(owner, "vm")
 	id := testResourceID(owner, 1)
 	vm, err := buildVM("ci", id, gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/vm-network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
-	}, "longhorn", labels, map[string]string{expiresKey: "1000"})
+	}, "longhorn", labels, map[string]string{expiresKey: "1000", workflowRefKey: owner.WorkflowRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,34 +70,43 @@ func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
 		t.Fatalf("wrong root claim: %v", metadata)
 	}
 	rootAnnotations := metadata["annotations"].(map[string]any)
-	if rootAnnotations[imageKey] != "default/ubuntu" || rootAnnotations[expiresKey] != "1000" {
+	if rootAnnotations[imageKey] != "default/ubuntu" || rootAnnotations[expiresKey] != "1000" || rootAnnotations[workflowRefKey] != owner.WorkflowRef {
 		t.Fatalf("wrong root recovery metadata: %v", rootAnnotations)
 	}
 	templateAnnotations, _, err := unstructured.NestedStringMap(vm.Object, "spec", "template", "metadata", "annotations")
-	if err != nil || templateAnnotations[expiresKey] != "1000" {
+	if err != nil || templateAnnotations[expiresKey] != "1000" || templateAnnotations[workflowRefKey] != owner.WorkflowRef {
 		t.Fatalf("wrong VMI template recovery metadata: %v, %v", templateAnnotations, err)
 	}
-	if vm.GetLabels()[repoLabel] != owner.RepositoryID || vm.GetAnnotations()[expiresKey] != "1000" {
+	if vm.GetLabels()[repoLabel] != owner.RepositoryID || vm.GetAnnotations()[expiresKey] != "1000" || vm.GetAnnotations()[workflowRefKey] != owner.WorkflowRef {
 		t.Fatalf("wrong gateway metadata: labels=%v annotations=%v", vm.GetLabels(), vm.GetAnnotations())
+	}
+	cloudInit := secret("ci", id+"-init", ownerLabels(owner, "cloud-init"),
+		map[string]string{expiresKey: "1000", workflowRefKey: owner.WorkflowRef}, "#cloud-config")
+	if cloudInit.Annotations[workflowRefKey] != owner.WorkflowRef {
+		t.Fatalf("cloud-init workflow ref = %q", cloudInit.Annotations[workflowRefKey])
 	}
 }
 
-func TestValidIDAcceptsOnlySequentialNames(t *testing.T) {
-	if !validID("ci-123-456-a2-001") || !validID("ci-123-local-smoke-a1-1000") {
-		t.Fatal("valid sequential ID rejected")
+func TestValidIDUsesConfiguredKindPrefix(t *testing.T) {
+	backend := &Backend{}
+	if !backend.validID("ci-vm-00000001", "vm") || !backend.validID("ci-vol-00000001", "volume") {
+		t.Fatal("valid ID rejected")
 	}
-	for _, id := range []string{"runner-gw-u6bpqc4qo7b6k35d", "hrgw-u6bpqc4qo7b6k35d", "rgw-u6bpqc4qo7b6k35diocof63v", "ci-123-456-a2-01"} {
-		if validID(id) {
+	for _, id := range []string{"runner-gw-u6bpqc4qo7b6k35d", "ci-123-456-a2-001", "ci-vm-0000000A", "ci-vm-00000000"} {
+		if backend.validID(id, "vm") {
 			t.Fatalf("unsupported ID accepted: %s", id)
 		}
+	}
+	if backend.validID("ci-vol-00000001", "vm") {
+		t.Fatal("accepted volume ID as VM")
 	}
 }
 
 func TestVMStatusListsSequentialVolumesAndExcludesRoot(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	vmID := testResourceID(owner, 1)
-	volumeOne := testResourceID(owner, 2)
-	volumeTwo := testResourceID(owner, 3)
+	volumeOne := testResourceID(owner, 2, "volume")
+	volumeTwo := testResourceID(owner, 3, "volume")
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"metadata": map[string]any{"name": vmID},
 		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
@@ -172,12 +181,12 @@ func TestVMStatusReadinessRequiresRunningVMIWithUsableNICAddress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			vm := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachine",
-				"metadata": map[string]any{"name": "ci-123-456-a1-001", "namespace": "ci"},
+				"metadata": map[string]any{"name": "ci-vm-00000001", "namespace": "ci"},
 				"status":   map[string]any{"printableStatus": "Running"},
 			}}
 			vmi := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "kubevirt.io/v1", "kind": "VirtualMachineInstance",
-				"metadata": map[string]any{"name": "ci-123-456-a1-001", "namespace": "ci"},
+				"metadata": map[string]any{"name": "ci-vm-00000001", "namespace": "ci"},
 				"status":   map[string]any{"phase": test.phase, "interfaces": test.interfaces},
 			}}
 			backend := &Backend{dynamic: fake.NewSimpleDynamicClient(runtime.NewScheme(), vmi)}

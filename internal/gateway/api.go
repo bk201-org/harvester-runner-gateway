@@ -108,7 +108,7 @@ func NewServerWithLogger(cfg config.Config, verifier TokenVerifier, backend Back
 // NewServerWithAllocationStore uses durable reservations when store is set.
 func NewServerWithAllocationStore(cfg config.Config, verifier TokenVerifier, backend Backend, logger *slog.Logger, store AllocationStore) *Server {
 	s := &Server{cfg: cfg, verifier: verifier, backend: backend, logger: normalizeLogger(logger),
-		opGate: make(chan struct{}, 1), allocator: newAllocator()}
+		opGate: make(chan struct{}, 1), allocator: newAllocator(cfg.IDPrefixes())}
 	s.allocator.store = store
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

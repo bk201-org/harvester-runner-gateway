@@ -24,7 +24,7 @@ import (
 const primaryInterfaceName = "nic-1"
 
 func (b *Backend) getOwnedVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string) (*unstructured.Unstructured, error) {
-	if !validID(id) {
+	if !b.validID(id, "vm") {
 		return nil, gateway.ErrNotFound
 	}
 	vm, err := b.dynamic.Resource(vmGVR).Namespace(policy.Namespace).Get(ctx, id, metav1.GetOptions{})
@@ -49,7 +49,7 @@ func (b *Backend) CountVMs(ctx context.Context, policy config.RepositoryPolicy) 
 	}
 	count := 0
 	for i := range list.Items {
-		if validID(list.Items[i].GetName()) && repositoryOwned(list.Items[i].GetLabels(), policy.RepositoryID, "vm") {
+		if b.validID(list.Items[i].GetName(), "vm") && repositoryOwned(list.Items[i].GetLabels(), policy.RepositoryID, "vm") {
 			count++
 		}
 	}
@@ -63,7 +63,7 @@ func (b *Backend) ListVMs(ctx context.Context, policy config.RepositoryPolicy, o
 	}
 	items := make([]gateway.VMStatus, 0, len(list.Items))
 	for i := range list.Items {
-		if !validID(list.Items[i].GetName()) || !owned(list.Items[i].GetLabels(), owner, "vm") {
+		if !b.validID(list.Items[i].GetName(), "vm") || !owned(list.Items[i].GetLabels(), owner, "vm") {
 			continue
 		}
 		item, err := b.vmStatus(ctx, policy.Namespace, &list.Items[i])
@@ -104,7 +104,7 @@ func (b *Backend) vmStatus(ctx context.Context, namespace string, vm *unstructur
 			continue
 		}
 		name, _ := pvc["claimName"].(string)
-		if validID(name) && name != vm.GetName()+"-root" {
+		if b.validID(name, "volume") && name != vm.GetName()+"-root" {
 			status.AttachedVolumeIDs = append(status.AttachedVolumeIDs, name)
 		}
 	}
@@ -193,7 +193,7 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 		return gateway.VMStatus{}, fmt.Errorf("%w: %v", gateway.ErrInvalid, err)
 	}
 	labels := ownerLabels(owner, "vm")
-	values := annotations(expires)
+	values := resourceAnnotations(expires, owner)
 	if err := b.verifyVMDependencies(ctx, policy, id); err != nil {
 		return gateway.VMStatus{}, err
 	}
@@ -263,6 +263,9 @@ func (b *Backend) recoverCloudInitSecret(ctx context.Context, policy config.Repo
 func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, labels, values map[string]string) (*unstructured.Unstructured, error) {
 	rootName := id + "-root"
 	rootAnnotations := map[string]string{imageKey: req.Image, autoDelete: "true", expiresKey: values[expiresKey]}
+	if workflowRef := values[workflowRefKey]; workflowRef != "" {
+		rootAnnotations[workflowRefKey] = workflowRef
+	}
 	claimTemplate := []any{map[string]any{
 		"metadata": map[string]any{"name": rootName, "labels": stringMap(ownerLabels(auth.Owner{
 			RepositoryID: labels[repoLabel], RunID: labels[runLabel], RunAttempt: labels[attemptLabel]}, "vm-root")), "annotations": stringMap(rootAnnotations)},
@@ -274,6 +277,9 @@ func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, l
 		return nil, err
 	}
 	metaAnnotations := map[string]any{claimKey: string(encoded), expiresKey: values[expiresKey]}
+	if workflowRef := values[workflowRefKey]; workflowRef != "" {
+		metaAnnotations[workflowRefKey] = workflowRef
+	}
 	networkRef := req.Network
 	if strings.HasPrefix(networkRef, namespace+"/") {
 		networkRef = strings.TrimPrefix(networkRef, namespace+"/")

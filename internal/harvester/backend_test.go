@@ -15,11 +15,11 @@ import (
 
 func TestKubeVirtSubresourceRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/apis/subresources.kubevirt.io/v1/namespaces/ci/virtualmachines/ci-123-456-a1-001/addvolume" {
+		if r.Method != http.MethodPut || r.URL.Path != "/apis/subresources.kubevirt.io/v1/namespaces/ci/virtualmachines/ci-vm-00000001/addvolume" {
 			t.Errorf("unexpected KubeVirt request: %s %s", r.Method, r.URL.Path)
 		}
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["name"] != "ci-123-456-a1-001" {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["name"] != "ci-vm-00000001" {
 			t.Errorf("unexpected request body: %v %v", body, err)
 		}
 		w.WriteHeader(http.StatusAccepted)
@@ -34,7 +34,7 @@ func TestKubeVirtSubresourceRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := &Backend{sub: client}
-	if err := backend.subresource(context.Background(), "ci", "ci-123-456-a1-001", "addvolume", map[string]string{"name": "ci-123-456-a1-001"}); err != nil {
+	if err := backend.subresource(context.Background(), "ci", "ci-vm-00000001", "addvolume", map[string]string{"name": "ci-vm-00000001"}); err != nil {
 		t.Fatal(err)
 	}
 }

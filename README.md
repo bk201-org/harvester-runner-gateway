@@ -9,7 +9,7 @@ or a GitHub PAT. The first target is Harvester v1.7.3.
 
 Copy `config.example.yaml` to a protected location and set the TLS certificate,
 kubeconfig, numeric GitHub repository ID, namespace, workflow policy, Harvester
-resource names, size limits, N/M quotas, and an absolute `database.path`.
+resource names, size limits, N/M quotas, ID prefixes, and an absolute `database.path`.
 Create a persistent directory writable by the gateway user for the SQLite
 database. Keep that directory across container or host restarts; the gateway
 creates the database file and its WAL files there. Then run:
@@ -217,9 +217,13 @@ Every successful POST create call allocates a new resource. Repeating a create
 request can create another resource, so save the returned ID before polling or
 deleting. If a create response is lost, list run-owned resources before trying
 again; an unknown resource will otherwise remain until expiry cleanup.
-IDs use `ci-<repository-id>-<run-id>-a<attempt>-<sequence>` with a sequence
-of at least three digits. VM and independent-volume counters are separate, so the two kinds may
-share an ID; VM dependencies are named `<id>-root` and `<id>-init`.
+VM IDs use `<vmPrefix><hex>` and independent volume IDs use
+`<volumePrefix><hex>`. The default prefixes are `ci-vm-` and `ci-vol-`, so
+the first IDs are `ci-vm-00000001` and `ci-vol-00000001`. Each kind has one
+gateway-wide counter across repositories and namespaces. Numbers are lowercase
+hex with at least eight digits. Configure distinct, lowercase DNS-safe prefixes
+ending in `-` at the top level of the YAML file. VM dependencies are named
+`<id>-root` and `<id>-init`.
 Create returns 201 while Kubernetes provisioning is still in progress;
 API clients poll GET for status. The bundled CLI performs that polling for VM
 creation unless `--no-wait` is set. A VM status is `ready` when its VMI is
@@ -233,6 +237,9 @@ optional `ttlSeconds`. The SSH keys are inserted for the configured default
 guest user. Volume requests accept `size` and optional `ttlSeconds`. Volume
 attachments require a running VM and a Bound volume; live hotplug uses SCSI.
 Only resources created by this gateway for the same run attempt can be managed.
+Repository, run, and attempt remain ownership labels. GitHub OIDC resources
+also carry the exact verified workflow ref in a `runner-gw-workflow-ref`
+annotation; local smoke resources have no workflow ref annotation.
 An attached volume must be detached before an explicit delete.
 
 `maxActiveVMs` counts VMs, including their boot disks. `maxActiveVolumes` counts
@@ -248,16 +255,21 @@ Allocation counters and an append-only reservation history live in the local
 SQLite database at `database.path`. Each number is committed before the
 Kubernetes create call, so failed or interrupted creates can leave gaps. A
 retained database prevents reuse of reserved numbers across restarts, even
-after resources are deleted. The database records IDs, owner scope, kind,
-sequence, and reservation time; it does not store request bodies or credentials.
+after resources are deleted. The database records IDs, owner, namespace, kind,
+sequence, reservation time, and the configured prefixes; it does not store
+request bodies or credentials.
 A reservation does not prove that resource creation succeeded.
 
-At startup the gateway also scans surviving VM, VMI, PVC, and Secret metadata
-before cleanup or request serving. This scan raises the allocation floor when
-older resources were created before SQLite tracking began. Those older objects
-are not imported into the reservation history. If the database is lost, only
-surviving Kubernetes objects can set the floor, so numbers from fully deleted
-resources may be reused. Keep backups if historical IDs must remain unique.
+At startup the gateway scans surviving VM, VMI, PVC, and Secret metadata
+before cleanup or request serving and raises each kind's allocation floor.
+These observations are not imported into reservation history. If the database
+is lost, only surviving Kubernetes objects can set the floor, so numbers from
+fully deleted resources may be reused. Keep backups if historical IDs must
+remain unique. The configured prefixes are bound to the database: changing
+either prefix requires stopping the gateway, removing resources with the old
+prefixes, and resetting the database. After stopping, remove the database file
+and its `-wal` and `-shm` companions to reset it. This ID change requires that
+one-time reset; the old database schema and old resource IDs are unsupported.
 The database needs no ConfigMap or extra Kubernetes RBAC verbs. Exactly one
 active gateway instance is still required for serialized quota checks.
 

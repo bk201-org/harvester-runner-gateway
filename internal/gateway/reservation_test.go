@@ -24,7 +24,7 @@ func TestValidationAndQuotaFailuresDoNotReserveSequence(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &item); err != nil {
 		t.Fatal(err)
 	}
-	if created.Code != http.StatusCreated || item.ID != "ci-123-1001-a1-001" {
+	if created.Code != http.StatusCreated || item.ID != "ci-vm-00000001" {
 		t.Fatalf("first accepted create = %d %q", created.Code, item.ID)
 	}
 }

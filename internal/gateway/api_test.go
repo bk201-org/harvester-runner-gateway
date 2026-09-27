@@ -423,16 +423,16 @@ func TestQuotaSharedAcrossRunsAndAttempts(t *testing.T) {
 	}
 }
 
-func TestSequentialResourceNamesAndIndependentKinds(t *testing.T) {
+func TestGlobalHexResourceNamesAndIndependentKinds(t *testing.T) {
 	s := testServer(10, 10)
 	for _, tc := range []struct {
 		path, want string
 		body       any
 	}{
-		{"/v1/vms", "ci-123-1001-a1-001", vmRequest()},
-		{"/v1/vms", "ci-123-1001-a1-002", vmRequest()},
-		{"/v1/volumes", "ci-123-1001-a1-001", VolumeRequest{Size: "1Gi"}},
-		{"/v1/volumes", "ci-123-1001-a1-002", VolumeRequest{Size: "1Gi"}},
+		{"/v1/vms", "ci-vm-00000001", vmRequest()},
+		{"/v1/vms", "ci-vm-00000002", vmRequest()},
+		{"/v1/volumes", "ci-vol-00000001", VolumeRequest{Size: "1Gi"}},
+		{"/v1/volumes", "ci-vol-00000002", VolumeRequest{Size: "1Gi"}},
 	} {
 		got := doRequest(s, http.MethodPost, tc.path, "run-one", tc.body)
 		if got.Code != http.StatusCreated {
@@ -450,7 +450,7 @@ func TestSequentialResourceNamesAndIndependentKinds(t *testing.T) {
 		ID string `json:"id"`
 	}
 	_ = json.Unmarshal(other.Body.Bytes(), &item)
-	if other.Code != http.StatusCreated || item.ID != "ci-123-1001-a2-001" {
+	if other.Code != http.StatusCreated || item.ID != "ci-vm-00000003" {
 		t.Fatalf("other attempt = %d %q", other.Code, item.ID)
 	}
 }
@@ -493,5 +493,27 @@ func TestLocalSmokeResourcesStaySeparateFromWorkflowRun(t *testing.T) {
 	}
 	if got := doRequest(s, http.MethodGet, "/v1/vms/"+localVM.ID, token, nil); got.Code != http.StatusOK {
 		t.Fatalf("local owner cannot read its VM: %d", got.Code)
+	}
+}
+
+func TestCreateUsesConfiguredKindPrefixes(t *testing.T) {
+	base := testServer(2, 2)
+	cfg := base.cfg
+	cfg.VMPrefix = "build-vm-"
+	cfg.VolumePrefix = "build-disk-"
+	s := NewServer(cfg, base.verifier, base.backend)
+	for _, tc := range []struct {
+		path, want string
+		body       any
+	}{
+		{"/v1/vms", "build-vm-00000001", vmRequest()},
+		{"/v1/volumes", "build-disk-00000001", VolumeRequest{Size: "1Gi"}},
+	} {
+		created := doRequest(s, http.MethodPost, tc.path, "run-one", tc.body)
+		var item struct{ ID string }
+		if err := json.Unmarshal(created.Body.Bytes(), &item); err != nil ||
+			created.Code != http.StatusCreated || item.ID != tc.want {
+			t.Fatalf("%s: status %d, ID %q, error %v", tc.path, created.Code, item.ID, err)
+		}
 	}
 }

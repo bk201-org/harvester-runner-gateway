@@ -25,7 +25,7 @@ func TestPendingAndLiveAttachmentsPreventVolumeDeletion(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	policy := config.RepositoryPolicy{RepositoryID: owner.RepositoryID, Namespace: "ci"}
 	vmID := testResourceID(owner, 1)
-	volumeID := testResourceID(owner, 1)
+	volumeID := testResourceID(owner, 1, "volume")
 	newVolume := func() *corev1.PersistentVolumeClaim {
 		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 			Name: volumeID, Namespace: "ci", Labels: ownerLabels(owner, "volume"),
@@ -86,7 +86,7 @@ func TestPendingAndLiveAttachmentsPreventVolumeDeletion(t *testing.T) {
 func TestOfflineDetachPreservesRootDisk(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	vmID := testResourceID(owner, 1)
-	volumeID := testResourceID(owner, 2)
+	volumeID := testResourceID(owner, 2, "volume")
 	vm, err := buildVM("ci", vmID, gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
@@ -122,7 +122,7 @@ func TestOfflineDetachRetriesVMConflict(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
 	policy := config.RepositoryPolicy{RepositoryID: owner.RepositoryID, Namespace: "ci"}
 	vmID := testResourceID(owner, 1)
-	volumeID := testResourceID(owner, 2)
+	volumeID := testResourceID(owner, 2, "volume")
 	vm, err := buildVM("ci", vmID, gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
@@ -177,5 +177,31 @@ func TestOfflineDetachRetriesVMConflict(t *testing.T) {
 		if claim == volumeID {
 			t.Fatalf("volume %s is still attached", volumeID)
 		}
+	}
+}
+
+func TestCreateVolumeAnnotatesWorkflowRef(t *testing.T) {
+	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1",
+		WorkflowRef: "org/repo/.github/workflows/test.yml@refs/heads/main"}
+	policy := config.RepositoryPolicy{RepositoryID: "123", Namespace: "ci", StorageClass: "longhorn"}
+	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{vmGVR: "VirtualMachineList", vmiGVR: "VirtualMachineInstanceList"})
+	kube := kubefake.NewClientset()
+	backend := &Backend{dynamic: dynamicClient, kube: kube}
+	id := testResourceID(owner, 1, "volume")
+	if _, err := backend.CreateVolume(context.Background(), policy, owner, id,
+		gateway.VolumeRequest{Size: "1Gi"}, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	pvc, err := kube.CoreV1().PersistentVolumeClaims("ci").Get(context.Background(), id, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pvc.Annotations[workflowRefKey] != owner.WorkflowRef {
+		t.Fatalf("workflow annotation = %v", pvc.Annotations)
+	}
+	local := auth.Owner{RepositoryID: "123", RunID: "local-smoke", RunAttempt: "1"}
+	if _, ok := resourceAnnotations(time.Unix(1000, 0), local)[workflowRefKey]; ok {
+		t.Fatal("local smoke resource has a workflow ref")
 	}
 }

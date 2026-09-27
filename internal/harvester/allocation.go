@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
 
@@ -36,7 +37,7 @@ func (b *Backend) ListAllocations(ctx context.Context) ([]gateway.AllocationObse
 				return nil, fmt.Errorf("list VMs in %s: %w", namespace, err)
 			}
 			for i := range list.Items {
-				observation, include, err := allocationObservation(namespace, list.Items[i].GetName(), list.Items[i].GetLabels(), list.Items[i].GetAnnotations(), "vm", "")
+				observation, include, err := allocationObservation(namespace, list.Items[i].GetName(), list.Items[i].GetLabels(), list.Items[i].GetAnnotations(), "vm", "", b.cfg.IDPrefixes())
 				if err != nil {
 					return nil, err
 				}
@@ -59,7 +60,7 @@ func (b *Backend) ListAllocations(ctx context.Context) ([]gateway.AllocationObse
 				return nil, fmt.Errorf("list VMIs in %s: %w", namespace, err)
 			}
 			for i := range list.Items {
-				observation, include, err := allocationObservation(namespace, list.Items[i].GetName(), list.Items[i].GetLabels(), list.Items[i].GetAnnotations(), "vm", "")
+				observation, include, err := allocationObservation(namespace, list.Items[i].GetName(), list.Items[i].GetLabels(), list.Items[i].GetAnnotations(), "vm", "", b.cfg.IDPrefixes())
 				if err != nil {
 					return nil, err
 				}
@@ -87,7 +88,7 @@ func (b *Backend) ListAllocations(ctx context.Context) ([]gateway.AllocationObse
 				if labelKind(item.Labels) == "vm-root" {
 					expectedKind, suffix = "vm-root", "-root"
 				}
-				observation, include, err := allocationObservation(namespace, item.Name, item.Labels, item.Annotations, expectedKind, suffix)
+				observation, include, err := allocationObservation(namespace, item.Name, item.Labels, item.Annotations, expectedKind, suffix, b.cfg.IDPrefixes())
 				if err != nil {
 					return nil, err
 				}
@@ -111,7 +112,7 @@ func (b *Backend) ListAllocations(ctx context.Context) ([]gateway.AllocationObse
 			}
 			for i := range list.Items {
 				item := &list.Items[i]
-				observation, include, err := allocationObservation(namespace, item.Name, item.Labels, item.Annotations, "cloud-init", "-init")
+				observation, include, err := allocationObservation(namespace, item.Name, item.Labels, item.Annotations, "cloud-init", "-init", b.cfg.IDPrefixes())
 				if err != nil {
 					return nil, err
 				}
@@ -128,34 +129,37 @@ func (b *Backend) ListAllocations(ctx context.Context) ([]gateway.AllocationObse
 	return observations, nil
 }
 
-func allocationObservation(namespace, name string, labels, values map[string]string, expectedKind, suffix string) (gateway.AllocationObservation, bool, error) {
+func kindForRecovery(expectedKind string) string {
+	if expectedKind == "volume" {
+		return "volume"
+	}
+	return "vm"
+}
+
+func allocationObservation(namespace, name string, labels, values map[string]string, expectedKind, suffix string, prefixes config.IDPrefixes) (gateway.AllocationObservation, bool, error) {
+	kind := kindForRecovery(expectedKind)
+	prefix := prefixes.ForKind(kind)
 	if suffix != "" {
 		if !strings.HasSuffix(name, suffix) {
-			if strings.HasPrefix(name, "ci-") {
+			if strings.HasPrefix(name, prefix) {
 				return gateway.AllocationObservation{}, false, fmt.Errorf("invalid dependent resource name %s/%s", namespace, name)
 			}
 			return gateway.AllocationObservation{}, false, nil
 		}
 		name = strings.TrimSuffix(name, suffix)
 	}
-	nameOwner, _, supported := gateway.ParseResourceID(name)
-	if !supported {
-		if strings.HasPrefix(name, "ci-") {
+	if _, supported := gateway.ParseResourceID(prefix, name); !supported {
+		if strings.HasPrefix(name, prefix) {
 			return gateway.AllocationObservation{}, false, fmt.Errorf("invalid resource name %s/%s", namespace, name)
 		}
-		// Pre-change objects are outside the recovery contract.
 		return gateway.AllocationObservation{}, false, nil
 	}
 	owner, actualKind := labeledOwner(labels)
-	if labels[managedLabel] != managedValue || actualKind != expectedKind || owner != nameOwner {
+	if labels[managedLabel] != managedValue || actualKind != expectedKind {
 		return gateway.AllocationObservation{}, false, fmt.Errorf("invalid ownership metadata for %s/%s", namespace, name)
 	}
 	if _, err := strconv.ParseInt(values[expiresKey], 10, 64); err != nil {
 		return gateway.AllocationObservation{}, false, fmt.Errorf("missing or invalid recovery metadata for %s/%s", namespace, name)
-	}
-	kind := "volume"
-	if expectedKind != "volume" {
-		kind = "vm"
 	}
 	return gateway.AllocationObservation{Namespace: namespace, Owner: auth.Owner{
 		RepositoryID: owner.RepositoryID, RunID: owner.RunID, RunAttempt: owner.RunAttempt,

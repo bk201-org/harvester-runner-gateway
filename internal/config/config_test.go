@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +57,42 @@ func TestDatabasePathMustBeAbsolute(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("accepted database path %q", path)
 		}
+	}
+}
+
+func TestIDPrefixDefaultsAndValidation(t *testing.T) {
+	base, err := Load(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.VMPrefix != DefaultVMPrefix || base.VolumePrefix != DefaultVolumePrefix {
+		t.Fatalf("example prefixes: %q, %q", base.VMPrefix, base.VolumePrefix)
+	}
+	for _, tc := range []struct {
+		name, vm, volume string
+		wantError        bool
+	}{
+		{"defaults", "", "", false},
+		{"custom", "build-vm-", "build-vol-", false},
+		{"same", "ci-", "ci-", true},
+		{"uppercase", "CI-vm-", "ci-vol-", true},
+		{"missing dash", "ci-vm", "ci-vol-", true},
+		{"dot", "ci.vm-", "ci-vol-", true},
+		{"too long", strings.Repeat("a", 42) + "-", "ci-vol-", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.VMPrefix, cfg.VolumePrefix = tc.vm, tc.volume
+			err := cfg.Validate()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("Validate() = %v, want error %t", err, tc.wantError)
+			}
+			if err == nil {
+				p := cfg.IDPrefixes()
+				if p.VM == "" || p.Volume == "" {
+					t.Fatalf("missing prefixes: %+v", p)
+				}
+			}
+		})
 	}
 }

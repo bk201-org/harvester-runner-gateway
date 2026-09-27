@@ -30,18 +30,21 @@ separate owners, while all runs of a repository share its quota. Each
 repository policy selects the namespace and allowed resource settings.
 
 Created VMs, VMIs, independent volume PVCs, boot disk PVCs, and cloud-init
-Secrets carry `runner-gw-*` ownership, kind, and expiry metadata.
-The resource name is not an authorization credential; every operation checks
-owner labels.
+Secrets carry `runner-gw-*` ownership, kind, and expiry metadata. OIDC
+resources also carry the exact verified workflow ref as a
+`runner-gw-workflow-ref` annotation. The resource name is not an
+authorization credential; every operation checks repository, run, and attempt
+labels.
 
-VMs and independent volumes use `ci-<repository-id>-<run-id>-a<attempt>-<sequence>`
-IDs such as `ci-123456789-1658821493-a2-001`. VM and volume sequences are
-independent for each namespace and owner, so a VM and volume may have the same
-ID. Boot disks and cloud-init Secrets use `<id>-root` and `<id>-init`. The
-allocator commits each reservation to SQLite before creating the Kubernetes
-object. At startup it scans surviving VM, VMI, PVC, and Secret metadata to
-raise the allocation floor for resources created before database tracking
-began. The database keeps reservation history across restarts.
+VMs use `<vmPrefix><hex>` IDs and independent volumes use
+`<volumePrefix><hex>` IDs. The default prefixes yield `ci-vm-00000001` and
+`ci-vol-00000001` as the first IDs. Lowercase hex numbers have at least eight
+digits; each kind has a separate gateway-wide counter across repositories and
+namespaces. Boot disks and cloud-init Secrets use `<id>-root` and
+`<id>-init`. The allocator commits each reservation to SQLite before
+creating the Kubernetes object. At startup it scans surviving VM, VMI, PVC,
+and Secret metadata to raise each allocation floor. SQLite keeps reservation
+history and binds both prefixes across restarts.
 
 ## How VM status is read
 

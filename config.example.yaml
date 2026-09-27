@@ -5,6 +5,8 @@ tls:
 kubeconfig: /run/secrets/harvester/kubeconfig
 database:
   path: /var/lib/harvester-runner-gateway/allocations.sqlite
+vmPrefix: ci-vm-
+volumePrefix: ci-vol-
 oidc:
   issuer: https://token.actions.githubusercontent.com
   audience: api://harvester-runner-gateway

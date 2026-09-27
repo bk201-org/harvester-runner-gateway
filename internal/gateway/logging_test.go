@@ -80,7 +80,7 @@ func TestResourceLogContainsOwnershipWithoutCredentials(t *testing.T) {
 		t.Fatalf("resource event not logged: %s", output.String())
 	}
 	if resource["operation"] != "create" || resource["resource_type"] != "vm" ||
-		resource["resource_id"] != "ci-123-1001-a1-001" || resource["namespace"] != "ci" ||
+		resource["resource_id"] != "ci-vm-00000001" || resource["namespace"] != "ci" ||
 		resource["repository_id"] != "123" || resource["run_id"] != "1001" ||
 		resource["run_attempt"] != "1" {
 		t.Fatalf("unexpected resource log: %#v", resource)

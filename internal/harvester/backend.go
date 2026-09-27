@@ -35,6 +35,7 @@ const (
 	attemptLabel    = "runner-gw-run-attempt"
 	kindLabel       = "runner-gw-kind"
 	expiresKey      = "runner-gw-expires-at"
+	workflowRefKey  = "runner-gw-workflow-ref"
 	imageKey        = "harvesterhci.io/imageId"
 	autoDelete      = "terraform-provider-harvester-auto-delete"
 	claimKey        = "harvesterhci.io/volumeClaimTemplates"
@@ -148,7 +149,8 @@ func labeledOwner(labels map[string]string) (auth.Owner, string) {
 
 func owned(labels map[string]string, owner auth.Owner, kind string) bool {
 	actual, actualKind := labeledOwner(labels)
-	return labels[managedLabel] == managedValue && actualKind == kind && actual == owner
+	return labels[managedLabel] == managedValue && actualKind == kind &&
+		actual.RepositoryID == owner.RepositoryID && actual.RunID == owner.RunID && actual.RunAttempt == owner.RunAttempt
 }
 
 func repositoryOwned(labels map[string]string, repositoryID, kind string) bool {
@@ -170,13 +172,21 @@ func annotations(expires time.Time) map[string]string {
 	return map[string]string{expiresKey: strconv.FormatInt(expires.Unix(), 10)}
 }
 
+func resourceAnnotations(expires time.Time, owner auth.Owner) map[string]string {
+	values := annotations(expires)
+	if owner.WorkflowRef != "" {
+		values[workflowRefKey] = owner.WorkflowRef
+	}
+	return values
+}
+
 func expiry(values map[string]string) time.Time {
 	seconds, _ := strconv.ParseInt(values[expiresKey], 10, 64)
 	return time.Unix(seconds, 0).UTC()
 }
 
-func validID(id string) bool {
-	_, _, ok := gateway.ParseResourceID(id)
+func (b *Backend) validID(id, kind string) bool {
+	_, ok := gateway.ParseResourceID(b.cfg.IDPrefixes().ForKind(kind), id)
 	return ok
 }
 

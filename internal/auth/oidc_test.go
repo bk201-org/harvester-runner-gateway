@@ -168,7 +168,7 @@ func TestVerifyGitHubOIDCClaims(t *testing.T) {
 		return text
 	}
 	owner, _, err := verifier.Verify(context.Background(), sign(claims), cfg)
-	if err != nil || owner.RepositoryID != "123" || owner.RunID != "456" || owner.RunAttempt != "2" {
+	if err != nil || owner.RepositoryID != "123" || owner.RunID != "456" || owner.RunAttempt != "2" || owner.WorkflowRef != policy.AllowedWorkflowRefs[0] {
 		t.Fatalf("valid token rejected: owner=%+v err=%v", owner, err)
 	}
 	for _, test := range []struct {

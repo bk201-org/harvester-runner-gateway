@@ -4,20 +4,18 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
-const maxPublicIDLength = 58
-
-var decimalIDPattern = regexp.MustCompile(`^[0-9]+$`)
-
-var publicIDPattern = regexp.MustCompile(`^ci-([0-9]+)-([0-9]+|local-smoke)-a([0-9]+)-([0-9]{3,})$`)
+const firstSequence uint64 = 1
+const maxPublicIDLength = 63
 
 // AllocationObservation describes one surviving Kubernetes object. Several
 // observations can describe the same VM allocation (VM, VMI, root and Secret).
@@ -28,16 +26,11 @@ type AllocationObservation struct {
 	ID        string
 }
 
-type allocationScope struct {
-	Namespace string
-	Owner     auth.Owner
-	Kind      string
-}
-
 type allocator struct {
-	mu    sync.Mutex
-	high  map[allocationScope]uint64
-	store AllocationStore
+	mu       sync.Mutex
+	high     map[string]uint64
+	prefixes config.IDPrefixes
+	store    AllocationStore
 }
 
 // AllocationStore persists reservations. Other database implementations can
@@ -47,12 +40,25 @@ type AllocationStore interface {
 	Close() error
 }
 
-func newAllocator() *allocator {
-	return &allocator{high: map[allocationScope]uint64{}}
+func newAllocator(prefixes config.IDPrefixes) *allocator {
+	return &allocator{high: map[string]uint64{}, prefixes: prefixes}
 }
 
-func scopeFor(namespace string, owner auth.Owner, kind string) allocationScope {
-	return allocationScope{Namespace: namespace, Owner: owner, Kind: kind}
+func validOwner(owner auth.Owner) bool {
+	return decimal(owner.RepositoryID) && decimal(owner.RunAttempt) &&
+		(owner.RunID == "local-smoke" || decimal(owner.RunID))
+}
+
+func decimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *allocator) reserve(namespace string, owner auth.Owner, kind string) (string, error) {
@@ -60,81 +66,75 @@ func (a *allocator) reserve(namespace string, owner auth.Owner, kind string) (st
 }
 
 func (a *allocator) reserveContext(ctx context.Context, namespace string, owner auth.Owner, kind string) (string, error) {
+	if namespace == "" || !validOwner(owner) || a.prefixes.ForKind(kind) == "" {
+		return "", fmt.Errorf("%w: invalid allocation metadata", ErrInvalid)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	scope := scopeFor(namespace, owner, kind)
 	if a.store != nil {
-		id, sequence, err := a.store.Reserve(ctx, namespace, owner, kind, a.high[scope])
+		id, sequence, err := a.store.Reserve(ctx, namespace, owner, kind, a.high[kind])
 		if err != nil {
 			return "", err
 		}
-		a.high[scope] = sequence
+		a.high[kind] = sequence
 		return id, nil
 	}
-	if a.high[scope] == math.MaxUint64 {
+	next := max(a.high[kind], firstSequence-1) + 1
+	if next > math.MaxInt64 {
 		return "", fmt.Errorf("%w: resource sequence exhausted", ErrInvalid)
 	}
-	next := a.high[scope] + 1
-	id, err := formatPublicID(owner, next)
+	id, err := formatPublicID(a.prefixes.ForKind(kind), next)
 	if err != nil {
 		return "", err
 	}
-	a.high[scope] = next
+	a.high[kind] = next
 	return id, nil
 }
 
-func formatPublicID(owner auth.Owner, sequence uint64) (string, error) {
-	if !decimalIDPattern.MatchString(owner.RepositoryID) || !decimalIDPattern.MatchString(owner.RunAttempt) ||
-		(owner.RunID != "local-smoke" && !decimalIDPattern.MatchString(owner.RunID)) {
-		return "", fmt.Errorf("%w: invalid resource owner", ErrInvalid)
+func formatPublicID(prefix string, sequence uint64) (string, error) {
+	if prefix == "" || sequence < firstSequence || sequence > math.MaxInt64 {
+		return "", fmt.Errorf("%w: invalid resource sequence", ErrInvalid)
 	}
-	if sequence == 0 {
-		return "", fmt.Errorf("%w: resource sequence must be positive", ErrInvalid)
-	}
-	id := fmt.Sprintf("ci-%s-%s-a%s-%03d", owner.RepositoryID, owner.RunID, owner.RunAttempt, sequence)
+	id := fmt.Sprintf("%s%08x", prefix, sequence)
 	if len(id) > maxPublicIDLength || len(validation.IsDNS1123Label(id)) != 0 {
 		return "", fmt.Errorf("%w: generated resource name is too long or invalid", ErrInvalid)
 	}
 	return id, nil
 }
 
-func ParseResourceID(id string) (auth.Owner, uint64, bool) {
-	if len(id) > maxPublicIDLength || len(validation.IsDNS1123Label(id)) != 0 {
-		return auth.Owner{}, 0, false
+func ParseResourceID(prefix, id string) (uint64, bool) {
+	if prefix == "" || !strings.HasPrefix(id, prefix) || len(id) > maxPublicIDLength ||
+		len(validation.IsDNS1123Label(id)) != 0 {
+		return 0, false
 	}
-	parts := publicIDPattern.FindStringSubmatch(id)
-	if parts == nil {
-		return auth.Owner{}, 0, false
+	sequence, err := strconv.ParseUint(strings.TrimPrefix(id, prefix), 16, 64)
+	if err != nil || sequence < firstSequence || sequence > math.MaxInt64 {
+		return 0, false
 	}
-	sequence, err := strconv.ParseUint(parts[4], 10, 64)
-	if err != nil || sequence == 0 || fmt.Sprintf("%03d", sequence) != parts[4] {
-		return auth.Owner{}, 0, false
-	}
-	return auth.Owner{RepositoryID: parts[1], RunID: parts[2], RunAttempt: parts[3]}, sequence, true
+	canonical, err := formatPublicID(prefix, sequence)
+	return sequence, err == nil && id == canonical
 }
 
 func (a *allocator) recover(observations []AllocationObservation) error {
-	high := map[allocationScope]uint64{}
+	high := map[string]uint64{}
 	for _, observation := range observations {
-		if observation.Namespace == "" || (observation.Kind != "vm" && observation.Kind != "volume") {
+		prefix := a.prefixes.ForKind(observation.Kind)
+		if observation.Namespace == "" || !validOwner(observation.Owner) || prefix == "" {
 			return fmt.Errorf("invalid allocation metadata for %q", observation.ID)
 		}
-		nameOwner, sequence, ok := ParseResourceID(observation.ID)
-		if !ok || nameOwner != observation.Owner {
-			return fmt.Errorf("invalid allocation name or owner for %q", observation.ID)
+		sequence, ok := ParseResourceID(prefix, observation.ID)
+		if !ok {
+			return fmt.Errorf("invalid allocation name for %q", observation.ID)
 		}
-		scope := scopeFor(observation.Namespace, observation.Owner, observation.Kind)
-		if sequence > high[scope] {
-			high[scope] = sequence
+		if sequence > high[observation.Kind] {
+			high[observation.Kind] = sequence
 		}
 	}
-
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// A rescan cannot lower a live process's high-water marks.
-	for scope, sequence := range high {
-		if sequence > a.high[scope] {
-			a.high[scope] = sequence
+	for kind, sequence := range high {
+		if sequence > a.high[kind] {
+			a.high[kind] = sequence
 		}
 	}
 	return nil

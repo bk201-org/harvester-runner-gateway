@@ -1,83 +1,96 @@
 package gateway
 
 import (
-	"errors"
-	"strings"
 	"testing"
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
-func TestAllocatorSequencesScopesKindsAndWidth(t *testing.T) {
+func TestAllocatorUsesGlobalPerKindHexSequences(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "2"}
-	a := newAllocator()
-	first, err := a.reserve("ci", owner, "vm")
-	if err != nil || first != "ci-123-456-a2-001" {
-		t.Fatalf("first = %q, %v", first, err)
+	other := auth.Owner{RepositoryID: "999", RunID: "789", RunAttempt: "1"}
+	a := newAllocator(config.Config{}.IDPrefixes())
+	for _, tc := range []struct {
+		namespace  string
+		owner      auth.Owner
+		kind, want string
+	}{
+		{"ci", owner, "vm", "ci-vm-00000001"},
+		{"ci", owner, "vm", "ci-vm-00000002"},
+		{"other", other, "vm", "ci-vm-00000003"},
+		{"ci", owner, "volume", "ci-vol-00000001"},
+		{"other", other, "volume", "ci-vol-00000002"},
+	} {
+		id, err := a.reserve(tc.namespace, tc.owner, tc.kind)
+		if err != nil || id != tc.want {
+			t.Fatalf("reserve %s = %q, %v; want %q", tc.kind, id, err, tc.want)
+		}
 	}
-	second, _ := a.reserve("ci", owner, "vm")
-	if second != "ci-123-456-a2-002" {
-		t.Fatalf("second = %q", second)
+	a.high["vm"] = 0xfffffffe
+	id, err := a.reserve("ci", owner, "vm")
+	if err != nil || id != "ci-vm-ffffffff" {
+		t.Fatalf("last eight-digit ID = %q, %v", id, err)
 	}
-	volume, _ := a.reserve("ci", owner, "volume")
-	if volume != first {
-		t.Fatalf("independent volume sequence = %q, want %q", volume, first)
-	}
-	scope := scopeFor("ci", owner, "vm")
-	a.high[scope] = 998
-	got999, _ := a.reserve("ci", owner, "vm")
-	got1000, _ := a.reserve("ci", owner, "vm")
-	if got999 != "ci-123-456-a2-999" || got1000 != "ci-123-456-a2-1000" {
-		t.Fatalf("width transition = %q, %q", got999, got1000)
-	}
-	local := auth.Owner{RepositoryID: "123", RunID: "local-smoke", RunAttempt: "1"}
-	localID, err := a.reserve("ci", local, "vm")
-	if err != nil || localID != "ci-123-local-smoke-a1-001" {
-		t.Fatalf("local smoke = %q, %v", localID, err)
-	}
-}
-
-func TestAllocatorRejectsOversizedNameBeforeReservation(t *testing.T) {
-	owner := auth.Owner{RepositoryID: strings.Repeat("1", 30), RunID: strings.Repeat("2", 30), RunAttempt: "1"}
-	a := newAllocator()
-	if _, err := a.reserve("ci", owner, "vm"); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("oversized reserve = %v", err)
-	}
-	if got := a.high[scopeFor("ci", owner, "vm")]; got != 0 {
-		t.Fatalf("failed reservation advanced state: high=%d", got)
+	id, err = a.reserve("ci", owner, "vm")
+	if err != nil || id != "ci-vm-100000000" {
+		t.Fatalf("width growth = %q, %v", id, err)
 	}
 }
 
-func TestAllocatorRecoversHighWaterMarks(t *testing.T) {
+func TestAllocatorCustomPrefixesAndCanonicalParsing(t *testing.T) {
+	prefixes := config.IDPrefixes{VM: "build-vm-", Volume: "build-disk-"}
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
-	a := newAllocator()
+	a := newAllocator(prefixes)
+	id, err := a.reserve("ci", owner, "vm")
+	if err != nil || id != "build-vm-00000001" {
+		t.Fatalf("custom prefix = %q, %v", id, err)
+	}
+	if n, ok := ParseResourceID(prefixes.VM, id); !ok || n != firstSequence {
+		t.Fatalf("parse %q = %d, %t", id, n, ok)
+	}
+	for _, invalid := range []string{"ci-vm-00000001", "build-vm-0000000A", "build-vm-0000000001", "build-vm-00000000", "build-vm-0000000g", "ci-123-456-a1-001"} {
+		if _, ok := ParseResourceID(prefixes.VM, invalid); ok {
+			t.Errorf("accepted %q", invalid)
+		}
+	}
+}
+
+func TestAllocatorRecoversGlobalHighWaterMarks(t *testing.T) {
+	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
+	other := auth.Owner{RepositoryID: "999", RunID: "789", RunAttempt: "2"}
+	a := newAllocator(config.Config{}.IDPrefixes())
 	observations := []AllocationObservation{
-		{Namespace: "ci", Owner: owner, Kind: "vm", ID: "ci-123-456-a1-001"},
-		{Namespace: "ci", Owner: owner, Kind: "vm", ID: "ci-123-456-a1-003"},
-		// A dependent object repeats the same parent allocation.
-		{Namespace: "ci", Owner: owner, Kind: "vm", ID: "ci-123-456-a1-003"},
+		{Namespace: "ci", Owner: owner, Kind: "vm", ID: "ci-vm-00000011"},
+		{Namespace: "other", Owner: other, Kind: "vm", ID: "ci-vm-00000013"},
+		{Namespace: "other", Owner: other, Kind: "vm", ID: "ci-vm-00000013"},
+		{Namespace: "ci", Owner: owner, Kind: "volume", ID: "ci-vol-00000020"},
 	}
 	if err := a.recover(observations); err != nil {
 		t.Fatal(err)
 	}
-	next, err := a.reserve("ci", owner, "vm")
-	if err != nil || next != "ci-123-456-a1-004" {
-		t.Fatalf("next = %q, %v", next, err)
+	vm, err := a.reserve("ci", owner, "vm")
+	if err != nil || vm != "ci-vm-00000014" {
+		t.Fatalf("recovered VM = %q, %v", vm, err)
+	}
+	volume, err := a.reserve("other", other, "volume")
+	if err != nil || volume != "ci-vol-00000021" {
+		t.Fatalf("recovered volume = %q, %v", volume, err)
 	}
 	if err := a.recover(observations[:1]); err != nil {
 		t.Fatal(err)
 	}
-	afterRescan, _ := a.reserve("ci", owner, "vm")
-	if afterRescan != "ci-123-456-a1-005" {
-		t.Fatalf("after rescan = %q", afterRescan)
+	next, err := a.reserve("ci", owner, "vm")
+	if err != nil || next != "ci-vm-00000015" {
+		t.Fatalf("rescan lowered counter: %q, %v", next, err)
 	}
 	invalid := append([]AllocationObservation{}, observations...)
-	invalid = append(invalid, AllocationObservation{Namespace: "ci", Owner: owner, Kind: "vm", ID: "ci-999-456-a1-010"})
+	invalid = append(invalid, AllocationObservation{Namespace: "ci", Owner: owner, Kind: "vm", ID: "ci-vol-00000030"})
 	if err := a.recover(invalid); err == nil {
-		t.Fatal("accepted an allocation with a mismatched owner")
+		t.Fatal("accepted a wrong-kind allocation")
 	}
-	afterFailure, _ := a.reserve("ci", owner, "vm")
-	if afterFailure != "ci-123-456-a1-006" {
-		t.Fatalf("failed recovery advanced high-water mark: %q", afterFailure)
+	next, _ = a.reserve("ci", owner, "vm")
+	if next != "ci-vm-00000016" {
+		t.Fatalf("failed recovery advanced counter: %q", next)
 	}
 }
