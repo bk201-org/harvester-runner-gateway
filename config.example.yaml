@@ -3,6 +3,8 @@ tls:
   certFile: /run/secrets/gateway/tls.crt
   keyFile: /run/secrets/gateway/tls.key
 kubeconfig: /run/secrets/harvester/kubeconfig
+database:
+  path: /var/lib/harvester-runner-gateway/allocations.sqlite
 oidc:
   issuer: https://token.actions.githubusercontent.com
   audience: api://harvester-runner-gateway

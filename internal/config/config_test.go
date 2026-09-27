@@ -44,3 +44,17 @@ func TestLocalSmokeConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestDatabasePathMustBeAbsolute(t *testing.T) {
+	base, err := Load(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"", "allocations.sqlite"} {
+		cfg := base
+		cfg.Database.Path = path
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("accepted database path %q", path)
+		}
+	}
+}

@@ -55,7 +55,12 @@ func run(path string, logger *slog.Logger) error {
 		return fmt.Errorf("Harvester preflight: %w", err)
 	}
 	logger.Info("Harvester preflight completed")
-	api := gateway.NewServerWithLogger(cfg, verifier, backend, logger)
+	store, err := gateway.OpenSQLiteAllocationStore(ctx, cfg.Database.Path)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	api := gateway.NewServerWithAllocationStore(cfg, verifier, backend, logger, store)
 	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 45*time.Second)
 	err = api.RecoverAllocations(recoveryCtx)
 	recoveryCancel()

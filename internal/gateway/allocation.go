@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"regexp"
@@ -34,8 +35,16 @@ type allocationScope struct {
 }
 
 type allocator struct {
-	mu   sync.Mutex
-	high map[allocationScope]uint64
+	mu    sync.Mutex
+	high  map[allocationScope]uint64
+	store AllocationStore
+}
+
+// AllocationStore persists reservations. Other database implementations can
+// replace SQLite without changing the allocator or Kubernetes backend.
+type AllocationStore interface {
+	Reserve(context.Context, string, auth.Owner, string, uint64) (string, uint64, error)
+	Close() error
 }
 
 func newAllocator() *allocator {
@@ -47,9 +56,21 @@ func scopeFor(namespace string, owner auth.Owner, kind string) allocationScope {
 }
 
 func (a *allocator) reserve(namespace string, owner auth.Owner, kind string) (string, error) {
+	return a.reserveContext(context.Background(), namespace, owner, kind)
+}
+
+func (a *allocator) reserveContext(ctx context.Context, namespace string, owner auth.Owner, kind string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	scope := scopeFor(namespace, owner, kind)
+	if a.store != nil {
+		id, sequence, err := a.store.Reserve(ctx, namespace, owner, kind, a.high[scope])
+		if err != nil {
+			return "", err
+		}
+		a.high[scope] = sequence
+		return id, nil
+	}
 	if a.high[scope] == math.MaxUint64 {
 		return "", fmt.Errorf("%w: resource sequence exhausted", ErrInvalid)
 	}

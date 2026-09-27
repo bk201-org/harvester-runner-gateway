@@ -38,8 +38,10 @@ VMs and independent volumes use `ci-<repository-id>-<run-id>-a<attempt>-<sequenc
 IDs such as `ci-123456789-1658821493-a2-001`. VM and volume sequences are
 independent for each namespace and owner, so a VM and volume may have the same
 ID. Boot disks and cloud-init Secrets use `<id>-root` and `<id>-init`. The
-allocator stores high-water marks in memory. At startup it rebuilds them from
-surviving VM, VMI, PVC, and Secret metadata before cleanup or serving.
+allocator commits each reservation to SQLite before creating the Kubernetes
+object. At startup it scans surviving VM, VMI, PVC, and Secret metadata to
+raise the allocation floor for resources created before database tracking
+began. The database keeps reservation history across restarts.
 
 ## How VM status is read
 
@@ -83,7 +85,7 @@ fetch VMIs or resolve volume attachments; full status reads still do.
 Provisioning and deleting objects continue to count until they disappear. Each
 VM consumes one VM quota slot; its boot disk PVC is not counted separately. An
 operation gate serializes allocation, quota checks, creates, deletes, and
-cleanup. The in-memory allocator and quota checks require exactly one active
+cleanup. The serialized quota checks still require exactly one active
 gateway instance.
 
 VM creation writes a cloud-init Secret and VM object, then requests a KubeVirt
@@ -92,9 +94,10 @@ Independent volumes are separate PVCs and can be attached to running VMs. A
 successful create response can precede completion of VM or volume provisioning;
 clients poll the GET endpoint for progress.
 
-At startup the gateway first reconstructs allocation state, then runs expiry
-cleanup. Every minute it lists its labeled cluster resources and removes expired
-VMs, volumes, boot disks, and cloud-init Secrets. If an independent
+At startup the gateway opens SQLite, scans surviving resources for a safe
+allocation floor, then runs expiry cleanup. Every minute it lists its labeled
+cluster resources and removes expired VMs, volumes, boot disks, and cloud-init
+Secrets. If an independent
 volume is still attached when it expires, cleanup first requests detach and
 deletes it on a later pass. This scan also lets cleanup resume after
 a gateway restart. Deleting a VM does not delete its independent volumes.
@@ -103,7 +106,7 @@ a gateway restart. Deleting a VM does not delete its independent volumes.
 
 | Area | Implementation |
 | --- | --- |
-| HTTP routes, operation gate, allocator | [`internal/gateway/api.go`](internal/gateway/api.go), [`internal/gateway/allocation.go`](internal/gateway/allocation.go) |
+| HTTP routes, operation gate, allocator and SQLite store | [`internal/gateway/api.go`](internal/gateway/api.go), [`internal/gateway/allocation.go`](internal/gateway/allocation.go), [`internal/gateway/allocation_sqlite.go`](internal/gateway/allocation_sqlite.go) |
 | OIDC verification and owner identity | [`internal/auth/oidc.go`](internal/auth/oidc.go) |
 | Kubernetes clients, metadata, recovery scan | [`internal/harvester/backend.go`](internal/harvester/backend.go), [`internal/harvester/allocation.go`](internal/harvester/allocation.go) |
 | VM lookup, status, creation, and actions | [`internal/harvester/vm.go`](internal/harvester/vm.go) |

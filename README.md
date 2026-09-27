@@ -9,7 +9,10 @@ or a GitHub PAT. The first target is Harvester v1.7.3.
 
 Copy `config.example.yaml` to a protected location and set the TLS certificate,
 kubeconfig, numeric GitHub repository ID, namespace, workflow policy, Harvester
-resource names, size limits, and N/M quotas. Then run:
+resource names, size limits, N/M quotas, and an absolute `database.path`.
+Create a persistent directory writable by the gateway user for the SQLite
+database. Keep that directory across container or host restarts; the gateway
+creates the database file and its WAL files there. Then run:
 
 ```sh
 make build
@@ -241,13 +244,22 @@ separate from the N/M quota structure so quota dimensions can grow later.
 N/M limits apply per repository across all its workflow runs and attempts.
 Use a Kubernetes ResourceQuota for a cluster-enforced namespace-wide cap.
 
-Allocation counters live in memory and are rebuilt at startup from surviving
-VM, VMI, PVC, and Secret metadata before expiry cleanup or request serving.
-No ConfigMap or extra RBAC verbs are used. Counters never decrease during a
-process lifetime, even after deletion. After restart, numbers that belong only
-to fully deleted resources may be reused. Surviving partial creates still
-advance the counter. This recovery design is another reason exactly one active
-gateway instance is required.
+Allocation counters and an append-only reservation history live in the local
+SQLite database at `database.path`. Each number is committed before the
+Kubernetes create call, so failed or interrupted creates can leave gaps. A
+retained database prevents reuse of reserved numbers across restarts, even
+after resources are deleted. The database records IDs, owner scope, kind,
+sequence, and reservation time; it does not store request bodies or credentials.
+A reservation does not prove that resource creation succeeded.
+
+At startup the gateway also scans surviving VM, VMI, PVC, and Secret metadata
+before cleanup or request serving. This scan raises the allocation floor when
+older resources were created before SQLite tracking began. Those older objects
+are not imported into the reservation history. If the database is lost, only
+surviving Kubernetes objects can set the floor, so numbers from fully deleted
+resources may be reused. Keep backups if historical IDs must remain unique.
+The database needs no ConfigMap or extra Kubernetes RBAC verbs. Exactly one
+active gateway instance is still required for serialized quota checks.
 
 Resources expire after six hours by default, or after the requested TTL up to
 24 hours. A reconciler checks every minute, deleting expired VMs, boot disks,

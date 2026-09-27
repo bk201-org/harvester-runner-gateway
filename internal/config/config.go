@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,9 +28,14 @@ type Config struct {
 	TLS           TLSConfig          `json:"tls"`
 	Kubeconfig    string             `json:"kubeconfig"`
 	KubeContext   string             `json:"kubeContext"`
+	Database      DatabaseConfig     `json:"database"`
 	OIDC          OIDCConfig         `json:"oidc"`
 	LocalSmoke    LocalSmokeConfig   `json:"localSmoke"`
 	Repositories  []RepositoryPolicy `json:"repositories"`
+}
+
+type DatabaseConfig struct {
+	Path string `json:"path"`
 }
 
 type TLSConfig struct {
@@ -86,6 +92,9 @@ func Load(path string) (Config, error) {
 func (c *Config) Validate() error {
 	if c.ListenAddress == "" {
 		c.ListenAddress = ":8443"
+	}
+	if !filepath.IsAbs(c.Database.Path) {
+		return fmt.Errorf("database.path must be an absolute filesystem path")
 	}
 	if c.TLS.CertFile == "" || c.TLS.KeyFile == "" || c.Kubeconfig == "" {
 		return fmt.Errorf("tls.certFile, tls.keyFile, and kubeconfig are required")

@@ -102,8 +102,14 @@ func NewServer(cfg config.Config, verifier TokenVerifier, backend Backend) *Serv
 }
 
 func NewServerWithLogger(cfg config.Config, verifier TokenVerifier, backend Backend, logger *slog.Logger) *Server {
+	return NewServerWithAllocationStore(cfg, verifier, backend, logger, nil)
+}
+
+// NewServerWithAllocationStore uses durable reservations when store is set.
+func NewServerWithAllocationStore(cfg config.Config, verifier TokenVerifier, backend Backend, logger *slog.Logger, store AllocationStore) *Server {
 	s := &Server{cfg: cfg, verifier: verifier, backend: backend, logger: normalizeLogger(logger),
 		opGate: make(chan struct{}, 1), allocator: newAllocator()}
+	s.allocator.store = store
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +268,7 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		writeError(w, http.StatusConflict, "quota_exceeded", "active VM quota reached")
 		return
 	}
-	id, err := s.allocator.reserve(policy.Namespace, owner, "vm")
+	id, err := s.allocator.reserveContext(r.Context(), policy.Namespace, owner, "vm")
 	if err != nil {
 		s.backendError(w, r, err)
 		return
@@ -374,7 +380,7 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		writeError(w, http.StatusConflict, "quota_exceeded", "active volume quota reached")
 		return
 	}
-	id, err := s.allocator.reserve(policy.Namespace, owner, "volume")
+	id, err := s.allocator.reserveContext(r.Context(), policy.Namespace, owner, "volume")
 	if err != nil {
 		s.backendError(w, r, err)
 		return
