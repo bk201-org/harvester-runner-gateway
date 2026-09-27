@@ -25,9 +25,16 @@ jobs:
           client=./bin/hvst-runner-gw-client
           vm=$("$client" vm create \
             --image default/ubuntu-24-04 --network default/vm-network \
-            --cpu 2 --memory 4Gi --boot-disk-size 20Gi \
-            --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm")
-          vm_id=$(printf '%s' "$vm" | \
-            jq -er 'select(.ready == true and (.ipAddresses | length > 0)) | .id')
+            --cpu 2 --memory 4Gi --boot-disk-size 20Gi --no-wait)
+          vm_id=$(printf '%s' "$vm" | jq -er '.id')
           trap '"$client" vm delete "$vm_id" || true' EXIT
-          "$client" vm get "$vm_id" | jq .
+          for _ in $(seq 1 30); do
+            status=$("$client" vm get "$vm_id")
+            if printf '%s' "$status" | jq -e '.ready == true and (.ipAddresses | length > 0)' >/dev/null; then
+              printf '%s\n' "$status" | jq .
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "VM did not become ready" >&2
+          exit 1

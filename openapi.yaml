@@ -39,8 +39,6 @@ paths:
                 type: array
                 items: {$ref: "#/components/schemas/VMStatus"}
     post:
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -55,8 +53,7 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/VMStatus"}
-        "200": {description: Existing VM returned for the same idempotency key and request}
-        "409": {description: Quota or idempotency conflict}
+        "409": {description: Quota or resource conflict}
         "422": {description: Invalid VM specification}
   /v1/vms/{id}:
     parameters:
@@ -122,8 +119,6 @@ paths:
                 type: array
                 items: {$ref: "#/components/schemas/VolumeStatus"}
     post:
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -138,8 +133,7 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/VolumeStatus"}
-        "200": {description: Existing volume returned for the same idempotency key and request}
-        "409": {description: Quota or idempotency conflict}
+        "409": {description: Quota or resource conflict}
         "422": {description: Invalid volume specification}
   /v1/volumes/{id}:
     parameters:
@@ -193,11 +187,6 @@ components:
         type: string
         pattern: "^ci-[0-9]+-([0-9]+|local-smoke)-a[0-9]+-[0-9]{3,}$"
         example: ci-123456789-1658821493-a2-001
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: true
-      schema: {type: string, minLength: 1, maxLength: 128}
   schemas:
     VMRequest:
       type: object

@@ -30,8 +30,7 @@ separate owners, while all runs of a repository share its quota. Each
 repository policy selects the namespace and allowed resource settings.
 
 Created VMs, VMIs, independent volume PVCs, boot disk PVCs, and cloud-init
-Secrets carry current `runner-gw-*` ownership, kind, expiry, request-hash, and
-identity-hash metadata. Raw idempotency keys and request bodies are never stored.
+Secrets carry `runner-gw-*` ownership, kind, and expiry metadata.
 The resource name is not an authorization credential; every operation checks
 owner labels.
 
@@ -39,10 +38,8 @@ VMs and independent volumes use `ci-<repository-id>-<run-id>-a<attempt>-<sequenc
 IDs such as `ci-123456789-1658821493-a2-001`. VM and volume sequences are
 independent for each namespace and owner, so a VM and volume may have the same
 ID. Boot disks and cloud-init Secrets use `<id>-root` and `<id>-init`. The
-allocator stores high-water marks and SHA-256 idempotency identities in memory.
-At startup it rebuilds them from surviving VM, VMI, PVC, and Secret metadata
-before cleanup or serving. A same-key retry uses its recovered ID and the
-separate request hash detects payload conflicts.
+allocator stores high-water marks in memory. At startup it rebuilds them from
+surviving VM, VMI, PVC, and Secret metadata before cleanup or serving.
 
 ## How VM status is read
 

@@ -35,8 +35,6 @@ const (
 	attemptLabel    = "runner-gw-run-attempt"
 	kindLabel       = "runner-gw-kind"
 	expiresKey      = "runner-gw-expires-at"
-	hashKey         = "runner-gw-request-hash"
-	identityKey     = "runner-gw-identity-hash"
 	imageKey        = "harvesterhci.io/imageId"
 	autoDelete      = "terraform-provider-harvester-auto-delete"
 	claimKey        = "harvesterhci.io/volumeClaimTemplates"
@@ -168,8 +166,8 @@ func labelKind(labels map[string]string) string {
 	return kind
 }
 
-func annotations(expires time.Time, metadata gateway.ResourceMetadata) map[string]string {
-	return map[string]string{expiresKey: strconv.FormatInt(expires.Unix(), 10), hashKey: metadata.RequestHash, identityKey: metadata.IdentityHash}
+func annotations(expires time.Time) map[string]string {
+	return map[string]string{expiresKey: strconv.FormatInt(expires.Unix(), 10)}
 }
 
 func expiry(values map[string]string) time.Time {

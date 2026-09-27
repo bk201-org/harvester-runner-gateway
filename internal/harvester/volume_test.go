@@ -29,7 +29,7 @@ func TestPendingAndLiveAttachmentsPreventVolumeDeletion(t *testing.T) {
 	newVolume := func() *corev1.PersistentVolumeClaim {
 		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 			Name: volumeID, Namespace: "ci", Labels: ownerLabels(owner, "volume"),
-			Annotations: annotations(time.Now().Add(time.Hour), testMetadata),
+			Annotations: annotations(time.Now().Add(time.Hour)),
 		}}
 	}
 	tests := []struct {
@@ -90,7 +90,7 @@ func TestOfflineDetachPreservesRootDisk(t *testing.T) {
 	vm, err := buildVM("ci", vmID, gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
-	}, "longhorn", ownerLabels(owner, "vm"), map[string]string{expiresKey: "1000", hashKey: testMetadata.RequestHash, identityKey: testMetadata.IdentityHash})
+	}, "longhorn", ownerLabels(owner, "vm"), map[string]string{expiresKey: "1000"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestOfflineDetachRetriesVMConflict(t *testing.T) {
 	vm, err := buildVM("ci", vmID, gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
-	}, "longhorn", ownerLabels(owner, "vm"), annotations(time.Now().Add(time.Hour), testMetadata))
+	}, "longhorn", ownerLabels(owner, "vm"), annotations(time.Now().Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}

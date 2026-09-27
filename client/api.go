@@ -59,9 +59,9 @@ func (c *Client) Quota(ctx context.Context) (Quota, error) {
 	return decodeResponse[Quota](data, "quota")
 }
 
-func (c *Client) CreateVM(ctx context.Context, request VMRequest, idempotencyKey string) (VMStatus, error) {
+func (c *Client) CreateVM(ctx context.Context, request VMRequest) (VMStatus, error) {
 	data, err := c.Do(ctx, Request{operation: "create_vm", Method: http.MethodPost, Path: []string{"v1", "vms"}, Body: request,
-		IdempotencyKey: idempotencyKey, Auth: true, Statuses: []int{http.StatusOK, http.StatusCreated}})
+		Auth: true, Statuses: []int{http.StatusCreated}})
 	if err != nil {
 		return VMStatus{}, err
 	}
@@ -162,9 +162,9 @@ func (c *Client) DetachVolume(ctx context.Context, vmID, volumeID string) error 
 	return err
 }
 
-func (c *Client) CreateVolume(ctx context.Context, request VolumeRequest, idempotencyKey string) (VolumeStatus, error) {
+func (c *Client) CreateVolume(ctx context.Context, request VolumeRequest) (VolumeStatus, error) {
 	data, err := c.Do(ctx, Request{operation: "create_volume", Method: http.MethodPost, Path: []string{"v1", "volumes"}, Body: request,
-		IdempotencyKey: idempotencyKey, Auth: true, Statuses: []int{http.StatusOK, http.StatusCreated}})
+		Auth: true, Statuses: []int{http.StatusCreated}})
 	if err != nil {
 		return VolumeStatus{}, err
 	}

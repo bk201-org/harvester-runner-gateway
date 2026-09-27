@@ -8,7 +8,7 @@ import (
 
 func TestAllocationObservationRejectsMalformedNewNamesAndIgnoresOldNames(t *testing.T) {
 	owner := auth.Owner{RepositoryID: "123", RunID: "456", RunAttempt: "1"}
-	values := map[string]string{expiresKey: "123", hashKey: testMetadata.RequestHash, identityKey: testMetadata.IdentityHash}
+	values := map[string]string{expiresKey: "123"}
 	if _, include, err := allocationObservation("ci", "runner-gw-old", ownerLabels(owner, "vm"), values, "vm", ""); err != nil || include {
 		t.Fatalf("old object = include %v, error %v", include, err)
 	}

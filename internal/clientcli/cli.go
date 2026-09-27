@@ -26,7 +26,6 @@ type command struct {
 	kind, action, id, second string
 	vmRequest                client.VMRequest
 	volumeRequest            client.VolumeRequest
-	idempotencyKey           string
 	waitForVM                bool
 	waitTimeout              time.Duration
 }
@@ -157,7 +156,7 @@ func execute(ctx context.Context, api *client.Client, op command) (any, bool, er
 	case "vm":
 		switch op.action {
 		case "create":
-			status, err := api.CreateVM(ctx, op.vmRequest, op.idempotencyKey)
+			status, err := api.CreateVM(ctx, op.vmRequest)
 			if err == nil && op.waitForVM && !status.Ready {
 				waitCtx, cancel := context.WithTimeout(ctx, op.waitTimeout)
 				defer cancel()
@@ -184,7 +183,7 @@ func execute(ctx context.Context, api *client.Client, op command) (any, bool, er
 	case "volume":
 		switch op.action {
 		case "create":
-			value, err := api.CreateVolume(ctx, op.volumeRequest, op.idempotencyKey)
+			value, err := api.CreateVolume(ctx, op.volumeRequest)
 			return value, true, err
 		case "list":
 			value, err := api.ListVolumes(ctx)
@@ -311,7 +310,6 @@ func positiveQuantity(value string) bool {
 func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeout string) (command, error) {
 	op := command{kind: kind, action: "create"}
 	fs := flagSet(kind+" create", output, "Usage: hvst-runner-gw-client [global flags] "+kind+" create [flags]\nAll size quantities use Kubernetes notation, e.g. 4Gi. VM creation waits for a running VMI with a usable IP unless --no-wait is set.")
-	fs.StringVar(&op.idempotencyKey, "idempotency-key", "", "required: stable key for repeating this request (1-128 printable non-space ASCII characters)")
 	ttl := fs.Int("ttl-seconds", 0, "resource lifetime, 1-86400 seconds (omitted: server default)")
 	var keys stringList
 	var userDataFile, waitTimeout string
@@ -334,14 +332,6 @@ func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeou
 	}
 	if fs.NArg() != 0 {
 		return op, errors.New("create accepts flags only")
-	}
-	if len(op.idempotencyKey) < 1 || len(op.idempotencyKey) > 128 {
-		return op, errors.New("--idempotency-key requires 1-128 printable non-space ASCII characters")
-	}
-	for _, r := range op.idempotencyKey {
-		if r < 33 || r > 126 {
-			return op, errors.New("--idempotency-key requires printable non-space ASCII characters")
-		}
 	}
 	var ttlSet bool
 	fs.Visit(func(f *flag.Flag) {

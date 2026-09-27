@@ -150,7 +150,7 @@ func allocationObservation(namespace, name string, labels, values map[string]str
 	if labels[managedLabel] != managedValue || actualKind != expectedKind || owner != nameOwner {
 		return gateway.AllocationObservation{}, false, fmt.Errorf("invalid ownership metadata for %s/%s", namespace, name)
 	}
-	if _, err := strconv.ParseInt(values[expiresKey], 10, 64); err != nil || values[hashKey] == "" || values[identityKey] == "" {
+	if _, err := strconv.ParseInt(values[expiresKey], 10, 64); err != nil {
 		return gateway.AllocationObservation{}, false, fmt.Errorf("missing or invalid recovery metadata for %s/%s", namespace, name)
 	}
 	kind := "volume"
@@ -159,7 +159,5 @@ func allocationObservation(namespace, name string, labels, values map[string]str
 	}
 	return gateway.AllocationObservation{Namespace: namespace, Owner: auth.Owner{
 		RepositoryID: owner.RepositoryID, RunID: owner.RunID, RunAttempt: owner.RunAttempt,
-	}, Kind: kind, ID: name, Metadata: gateway.ResourceMetadata{
-		IdentityHash: values[identityKey], RequestHash: values[hashKey],
-	}}, true, nil
+	}, Kind: kind, ID: name}, true, nil
 }

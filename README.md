@@ -72,9 +72,9 @@ response size, and duration. Client errors use `WARN`; server and Harvester
 errors use `ERROR`. Resource events include the namespace, resource ID, and
 GitHub repository/run ownership fields.
 
-Authorization headers, idempotency keys, request bodies, SSH public keys, and
-cloud-init data are never logged. Collect stdout with the service manager or
-container runtime used to run the gateway. The CLI and smoke runner emit the
+Authorization headers, request bodies, SSH public keys, and cloud-init data
+are never logged. Collect stdout with the service manager or container runtime
+used to run the gateway. The CLI and smoke runner emit the
 same style of per-call JSON logs to stderr while reserving stdout for command
 responses and the final smoke result.
 
@@ -102,7 +102,6 @@ client=./bin/hvst-runner-gw-client
 "$client" vm create \
   --image default/ubuntu-24-04 --network default/vm-network \
   --cpu 2 --memory 4Gi --boot-disk-size 20Gi \
-  --idempotency-key local-example-vm \
   --ssh-public-key-file "$HOME/.ssh/id_ed25519.pub" \
   --ttl-seconds 3600
 "$client" vm list
@@ -125,23 +124,23 @@ Commands whose API response has no body produce no output on success.
 | `vm reboot ID` | Request reboot |
 | `vm attach ID VOLUME_ID` | Request live volume attachment |
 | `vm detach ID VOLUME_ID` | Request volume detachment |
-| `volume create --size 10Gi --idempotency-key KEY` | Create an independent volume |
+| `volume create --size 10Gi` | Create an independent volume |
 | `volume list` | List run-owned independent volumes |
 | `volume get ID` | Get volume status |
 | `volume delete ID` | Request volume deletion |
 
 VM creation requires `--image`, `--network`, `--cpu`, `--memory`,
-`--boot-disk-size`, and `--idempotency-key`. Optional inputs are repeatable
+`--boot-disk-size`. Optional inputs are repeatable
 `--ssh-public-key-file` (up to 10 keys), `--user-data-file` (cloud-config up to
 64 KiB), and `--ttl-seconds`. By default, the command polls every ten seconds
 for up to five minutes and prints the final status only after `ready` is true.
 Use `--wait-timeout` or `GATEWAY_VM_WAIT_TIMEOUT` to change that limit, or
 `--no-wait` to return the initial asynchronous API response. The normal
 `--timeout` remains the limit for each HTTP request. A readiness timeout leaves
-the VM allocated; repeat the command with the same idempotency key to resume
-waiting. Volume creation requires `--size` and `--idempotency-key`, and also
-accepts `--ttl-seconds`. An omitted TTL uses the server's six-hour default; an
-explicit TTL must be 1–86400 seconds.
+the VM allocated. Use `--no-wait` and save the returned ID when the caller
+must be able to inspect or delete the VM after a wait timeout. Volume creation
+requires `--size` and also accepts `--ttl-seconds`. An omitted TTL uses the
+server's six-hour default; an explicit TTL must be 1–86400 seconds.
 
 Global flags must precede the command, for example:
 
@@ -211,11 +210,12 @@ The [OpenAPI specification](openapi.yaml) defines all endpoints. Main routes:
 | POST, GET | `/v1/volumes` | Create or list run-owned volumes |
 | GET, DELETE | `/v1/volumes/{id}` | Status or delete |
 
-POST create calls require an `Idempotency-Key` header of 1–128 characters.
-Repeating a call with the same key and request returns the existing resource;
-reusing the key with a different request returns 409. IDs use
-`ci-<repository-id>-<run-id>-a<attempt>-<sequence>` with at least three sequence
-digits. VM and independent-volume counters are separate, so the two kinds may
+Every successful POST create call allocates a new resource. Repeating a create
+request can create another resource, so save the returned ID before polling or
+deleting. If a create response is lost, list run-owned resources before trying
+again; an unknown resource will otherwise remain until expiry cleanup.
+IDs use `ci-<repository-id>-<run-id>-a<attempt>-<sequence>` with a sequence
+of at least three digits. VM and independent-volume counters are separate, so the two kinds may
 share an ID; VM dependencies are named `<id>-root` and `<id>-init`.
 Create returns 201 while Kubernetes provisioning is still in progress;
 API clients poll GET for status. The bundled CLI performs that polling for VM
@@ -241,13 +241,12 @@ separate from the N/M quota structure so quota dimensions can grow later.
 N/M limits apply per repository across all its workflow runs and attempts.
 Use a Kubernetes ResourceQuota for a cluster-enforced namespace-wide cap.
 
-Allocation counters and idempotency mappings live in memory and are rebuilt at
-startup from surviving VM, VMI, PVC, and Secret metadata before expiry cleanup
-or request serving. No ConfigMap or extra RBAC verbs are used. Counters never
-decrease during a process lifetime, even after deletion. After restart, numbers
-that belong only to fully deleted resources may be reused; a fully deleted key
-is not guaranteed to recover its previous ID. Surviving partial creates retain
-their key mapping. This recovery design is another reason exactly one active
+Allocation counters live in memory and are rebuilt at startup from surviving
+VM, VMI, PVC, and Secret metadata before expiry cleanup or request serving.
+No ConfigMap or extra RBAC verbs are used. Counters never decrease during a
+process lifetime, even after deletion. After restart, numbers that belong only
+to fully deleted resources may be reused. Surviving partial creates still
+advance the counter. This recovery design is another reason exactly one active
 gateway instance is required.
 
 Resources expire after six hours by default, or after the requested TTL up to

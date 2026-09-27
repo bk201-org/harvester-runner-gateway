@@ -84,7 +84,7 @@ func (b *Backend) volumeStatus(ctx context.Context, namespace string, pvc *corev
 		return gateway.VolumeStatus{}, err
 	}
 	status := gateway.VolumeStatus{ID: pvc.Name, Phase: string(pvc.Status.Phase), Size: pvc.Spec.Resources.Requests.Storage().String(),
-		ExpiresAt: expiry(pvc.Annotations), RequestHash: pvc.Annotations[hashKey], IdentityHash: pvc.Annotations[identityKey]}
+		ExpiresAt: expiry(pvc.Annotations)}
 	if status.Phase == "" {
 		status.Phase = "Pending"
 	}
@@ -126,11 +126,12 @@ func (b *Backend) volumeStatus(ctx context.Context, namespace string, pvc *corev
 	return status, nil
 }
 
-func (b *Backend) CreateVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VolumeRequest, expires time.Time, metadata gateway.ResourceMetadata) (gateway.VolumeStatus, error) {
+func (b *Backend) CreateVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VolumeRequest, expires time.Time) (gateway.VolumeStatus, error) {
 	size := resource.MustParse(req.Size)
+	values := annotations(expires)
 	mode := corev1.PersistentVolumeBlock
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: policy.Namespace, Labels: ownerLabels(owner, "volume"), Annotations: annotations(expires, metadata)},
+		ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: policy.Namespace, Labels: ownerLabels(owner, "volume"), Annotations: values},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			StorageClassName: &policy.StorageClass, VolumeMode: &mode,
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
@@ -143,7 +144,7 @@ func (b *Backend) CreateVolume(ctx context.Context, policy config.RepositoryPoli
 		if getErr != nil {
 			return gateway.VolumeStatus{}, translate(err)
 		}
-		if !matchingRecovery(existing.Labels, existing.Annotations, owner, "volume", metadata) {
+		if !matchingCreate(existing.Labels, existing.Annotations, owner, "volume", values[expiresKey]) {
 			return gateway.VolumeStatus{}, fmt.Errorf("%w: volume name is occupied", gateway.ErrConflict)
 		}
 		created = existing

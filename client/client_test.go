@@ -229,7 +229,7 @@ func TestResponsesAndNoRetries(t *testing.T) {
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(503) }))
 	defer s.Close()
 	c := newClient(t, configuration(t, s))
-	_, err := c.Do(context.Background(), Request{Method: "POST", Path: []string{"v1", "vms"}, Auth: true, Body: VMRequest{CPU: 1}, IdempotencyKey: "stable-key", Statuses: []int{200, 201}})
+	_, err := c.Do(context.Background(), Request{Method: "POST", Path: []string{"v1", "vms"}, Auth: true, Body: VMRequest{CPU: 1}, Statuses: []int{201}})
 	if err == nil || calls.Load() != 1 {
 		t.Fatal("create should fail without retry")
 	}

@@ -59,26 +59,25 @@ func TestEveryOperation(t *testing.T) {
 		method, path string
 		status       int
 		body         any
-		key          string
 	}{
-		{[]string{"health"}, "GET", "/healthz", 204, nil, ""},
-		{[]string{"ready"}, "GET", "/readyz", 204, nil, ""},
-		{[]string{"quota"}, "GET", "/v1/quota", 200, nil, ""},
-		{[]string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "vm-key", "--ssh-public-key-file", keyFile, "--ssh-public-key-file", keyFile, "--user-data-file", userFile, "--ttl-seconds", "600"}, "POST", "/v1/vms", 201, vmBody, "vm-key"},
-		{[]string{"vm", "list"}, "GET", "/v1/vms", 200, nil, ""},
-		{[]string{"vm", "get", "vm1"}, "GET", "/v1/vms/vm1", 200, nil, ""},
-		{[]string{"vm", "delete", "vm1"}, "DELETE", "/v1/vms/vm1", 204, nil, ""},
-		{[]string{"vm", "power", "vm1", "off"}, "PUT", "/v1/vms/vm1/power", 202, map[string]any{"state": "off"}, ""},
-		{[]string{"vm", "reboot", "vm1"}, "POST", "/v1/vms/vm1/reboot", 202, nil, ""},
-		{[]string{"vm", "attach", "vm1", "vol1"}, "PUT", "/v1/vms/vm1/volumes/vol1", 202, nil, ""},
-		{[]string{"vm", "detach", "vm1", "vol1"}, "DELETE", "/v1/vms/vm1/volumes/vol1", 202, nil, ""},
-		{[]string{"volume", "create", "--size", "10Gi", "--idempotency-key", "vol-key"}, "POST", "/v1/volumes", 201, map[string]any{"size": "10Gi"}, "vol-key"},
-		{[]string{"volume", "list"}, "GET", "/v1/volumes", 200, nil, ""},
-		{[]string{"volume", "get", "vol1"}, "GET", "/v1/volumes/vol1", 200, nil, ""},
-		{[]string{"volume", "delete", "vol1"}, "DELETE", "/v1/volumes/vol1", 204, nil, ""},
+		{[]string{"health"}, "GET", "/healthz", 204, nil},
+		{[]string{"ready"}, "GET", "/readyz", 204, nil},
+		{[]string{"quota"}, "GET", "/v1/quota", 200, nil},
+		{[]string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--ssh-public-key-file", keyFile, "--ssh-public-key-file", keyFile, "--user-data-file", userFile, "--ttl-seconds", "600"}, "POST", "/v1/vms", 201, vmBody},
+		{[]string{"vm", "list"}, "GET", "/v1/vms", 200, nil},
+		{[]string{"vm", "get", "vm1"}, "GET", "/v1/vms/vm1", 200, nil},
+		{[]string{"vm", "delete", "vm1"}, "DELETE", "/v1/vms/vm1", 204, nil},
+		{[]string{"vm", "power", "vm1", "off"}, "PUT", "/v1/vms/vm1/power", 202, map[string]any{"state": "off"}},
+		{[]string{"vm", "reboot", "vm1"}, "POST", "/v1/vms/vm1/reboot", 202, nil},
+		{[]string{"vm", "attach", "vm1", "vol1"}, "PUT", "/v1/vms/vm1/volumes/vol1", 202, nil},
+		{[]string{"vm", "detach", "vm1", "vol1"}, "DELETE", "/v1/vms/vm1/volumes/vol1", 202, nil},
+		{[]string{"volume", "create", "--size", "10Gi"}, "POST", "/v1/volumes", 201, map[string]any{"size": "10Gi"}},
+		{[]string{"volume", "list"}, "GET", "/v1/volumes", 200, nil},
+		{[]string{"volume", "get", "vol1"}, "GET", "/v1/volumes/vol1", 200, nil},
+		{[]string{"volume", "delete", "vol1"}, "DELETE", "/v1/volumes/vol1", 204, nil},
 		// The second accepted power state uses the same API operation.
-		{[]string{"vm", "power", "vm1", "on"}, "PUT", "/v1/vms/vm1/power", 202, map[string]any{"state": "on"}, ""},
-		{[]string{"volume", "create", "--size", "10Gi", "--idempotency-key", "vol-key", "--ttl-seconds", "1"}, "POST", "/v1/volumes", 200, map[string]any{"size": "10Gi", "ttlSeconds": float64(1)}, "vol-key"},
+		{[]string{"vm", "power", "vm1", "on"}, "PUT", "/v1/vms/vm1/power", 202, map[string]any{"state": "on"}},
+		{[]string{"volume", "create", "--size", "10Gi", "--ttl-seconds", "1"}, "POST", "/v1/volumes", 201, map[string]any{"size": "10Gi", "ttlSeconds": float64(1)}},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args[:min(2, len(tc.args))], " ")+fmt.Sprint(tc.status), func(t *testing.T) {
@@ -113,9 +112,6 @@ func TestEveryOperation(t *testing.T) {
 				}
 				if r.Header.Get("Authorization") != expectedAuth {
 					t.Error("incorrect authentication")
-				}
-				if r.Header.Get("Idempotency-Key") != tc.key {
-					t.Error("incorrect idempotency key")
 				}
 				data, _ := io.ReadAll(r.Body)
 				var body any
@@ -156,14 +152,14 @@ func TestEveryOperation(t *testing.T) {
 func TestInvalidInputsNeverReachNetwork(t *testing.T) {
 	badKey := writeTestFile(t, "bad.pub", []byte("not a key"))
 	badUser := writeTestFile(t, "bad.yaml", []byte("password: hidden"))
-	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "key"}
+	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi"}
 	cases := [][]string{
 		{}, {"unknown"}, {"vm"}, {"vm", "bad"}, {"volume", "reboot", "x"}, {"quota", "extra"}, {"vm", "get"}, {"vm", "get", "../x"}, {"vm", "get", "a/b"}, {"vm", "get", ".."},
 		{"vm", "list", "--unknown"}, {"vm", "get", "x", "--unknown"}, {"vm", "power", "x", "bad"}, {"vm", "attach", "x"},
-		{"volume", "create", "--size", "0", "--idempotency-key", "key"}, {"volume", "create", "--size", "1Gi"}, {"volume", "create", "--size", "1Gi", "--idempotency-key", "bad key"},
-		{"vm", "create", "--idempotency-key", "key"}, {"--timeout", "bad", "health"}, {"--timeout", "0s", "health"},
+		{"volume", "create", "--size", "0"},
+		{"vm", "create"}, {"--timeout", "bad", "health"}, {"--timeout", "0s", "health"},
 	}
-	for _, extra := range [][]string{{"--ttl-seconds", "0"}, {"--ttl-seconds", "86401"}, {"--cpu", "0"}, {"--cpu", "invalid"}, {"--memory", "NaN"}, {"--image", "ubuntu"}, {"--user-data-file", badUser}, {"--ssh-public-key-file", badKey}, {"--ssh-public-key-file", "/nonexistent"}, {"--user-data-file", "/nonexistent"}, {"--idempotency-key", strings.Repeat("x", 129)}} {
+	for _, extra := range [][]string{{"--ttl-seconds", "0"}, {"--ttl-seconds", "86401"}, {"--cpu", "0"}, {"--cpu", "invalid"}, {"--memory", "NaN"}, {"--image", "ubuntu"}, {"--user-data-file", badUser}, {"--ssh-public-key-file", badKey}, {"--ssh-public-key-file", "/nonexistent"}, {"--user-data-file", "/nonexistent"}} {
 		cases = append(cases, append(append([]string{}, base...), extra...))
 	}
 	calls := 0
@@ -224,7 +220,7 @@ func TestFlagPrecedenceAndExitCodes(t *testing.T) {
 }
 
 func TestVMCreateWaitOptions(t *testing.T) {
-	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "key"}
+	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi"}
 	tests := []struct {
 		name        string
 		args        []string
@@ -252,8 +248,8 @@ func TestVMCreateWaitOptions(t *testing.T) {
 	}
 }
 
-func TestVMCreateNoWaitAndIdempotentReady(t *testing.T) {
-	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "key"}
+func TestVMCreateNoWaitAndReady(t *testing.T) {
+	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi"}
 	tests := []struct {
 		name     string
 		args     []string
@@ -262,7 +258,7 @@ func TestVMCreateNoWaitAndIdempotentReady(t *testing.T) {
 	}{
 		{name: "no wait", args: append(append([]string{}, base...), "--no-wait"), status: http.StatusCreated,
 			response: `{"id":"ci-123-456-a1-001","phase":"Provisioning","powerState":"on","ready":false,"ipAddresses":[],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
-		{name: "idempotent ready", args: base, status: http.StatusOK,
+		{name: "ready", args: base, status: http.StatusCreated,
 			response: `{"id":"ci-123-456-a1-001","phase":"Running","powerState":"on","ready":true,"ipAddresses":["10.0.0.10"],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
 	}
 	for _, test := range tests {

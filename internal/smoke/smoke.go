@@ -3,7 +3,6 @@ package smoke
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,7 +41,6 @@ type config struct {
 	memory       string
 	bootDiskSize string
 	volumeSize   string
-	attempt      string
 	concurrency  int
 	waitTimeout  time.Duration
 	pollInterval time.Duration
@@ -58,14 +56,9 @@ type localConfig struct {
 }
 
 type workerState struct {
-	index            int
-	vmID, volumeID   string
-	vmKey, volumeKey string
-	vmRequest        client.VMRequest
-	volumeRequest    client.VolumeRequest
-	vmUncertain      bool
-	volumeUncertain  bool
-	attached         bool
+	index          int
+	vmID, volumeID string
+	attached       bool
 }
 
 type workerResult struct {
@@ -122,12 +115,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		cfg.client.GitHubActions = true
 		cfg.client.OIDCRequestURL = required(getenv, "ACTIONS_ID_TOKEN_REQUEST_URL")
 		cfg.client.OIDCRequestToken = required(getenv, "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-		runID := required(getenv, "GITHUB_RUN_ID")
-		runAttempt := required(getenv, "GITHUB_RUN_ATTEMPT")
-		if cfg.client.URL == "" || cfg.image == "" || cfg.network == "" || cfg.client.OIDCRequestURL == "" || cfg.client.OIDCRequestToken == "" || runID == "" || runAttempt == "" {
+		if cfg.client.URL == "" || cfg.image == "" || cfg.network == "" || cfg.client.OIDCRequestURL == "" || cfg.client.OIDCRequestToken == "" {
 			return config{}, configError("GitHub Actions smoke configuration is incomplete")
 		}
-		cfg.attempt = runID + "-" + runAttempt
 	} else {
 		path := getenv("GATEWAY_SMOKE_CONFIG")
 		if path == "" {
@@ -152,10 +142,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 			cfg.concurrency = local.Concurrency
 		}
 		if err := validateLocalToken(local.TokenFile); err != nil {
-			return config{}, err
-		}
-		cfg.attempt, err = randomAttempt()
-		if err != nil {
 			return config{}, err
 		}
 	}
@@ -223,14 +209,6 @@ func validateLocalToken(path string) error {
 	return nil
 }
 
-func randomAttempt() (string, error) {
-	data := make([]byte, 16)
-	if _, err := rand.Read(data); err != nil {
-		return "", fmt.Errorf("generate local smoke attempt: %w", err)
-	}
-	return "local-" + hex.EncodeToString(data), nil
-}
-
 func run(ctx context.Context, api *client.Client, cfg config, logger *slog.Logger) error {
 	quota, err := api.Quota(ctx)
 	if err != nil {
@@ -285,18 +263,15 @@ func runWorker(ctx context.Context, api *client.Client, cfg config, state worker
 		}
 	}()
 
-	state.vmRequest = client.VMRequest{
+	vmRequest := client.VMRequest{
 		Image: cfg.image, Network: cfg.network, CPU: 2, Memory: cfg.memory,
 		BootDiskSize: cfg.bootDiskSize, TTLSeconds: intPointer(3600),
 	}
-	state.vmKey = fmt.Sprintf("%s-vm-%d", cfg.attempt, state.index)
-	state.vmUncertain = true
-	vm, err := api.CreateVM(ctx, state.vmRequest, state.vmKey)
+	vm, err := api.CreateVM(ctx, vmRequest)
 	if err != nil {
 		return fmt.Errorf("create VM: %w", err)
 	}
 	state.vmID = vm.ID
-	state.vmUncertain = false
 	logger.InfoContext(ctx, "smoke VM created", "vm_id", state.vmID)
 	if !vm.Ready {
 		waitCtx, cancel := context.WithTimeout(ctx, cfg.waitTimeout)
@@ -307,15 +282,12 @@ func runWorker(ctx context.Context, api *client.Client, cfg config, state worker
 		}
 	}
 
-	state.volumeRequest = client.VolumeRequest{Size: cfg.volumeSize, TTLSeconds: intPointer(3600)}
-	state.volumeKey = fmt.Sprintf("%s-volume-%d", cfg.attempt, state.index)
-	state.volumeUncertain = true
-	volume, err := api.CreateVolume(ctx, state.volumeRequest, state.volumeKey)
+	volumeRequest := client.VolumeRequest{Size: cfg.volumeSize, TTLSeconds: intPointer(3600)}
+	volume, err := api.CreateVolume(ctx, volumeRequest)
 	if err != nil {
 		return fmt.Errorf("create volume: %w", err)
 	}
 	state.volumeID = volume.ID
-	state.volumeUncertain = false
 	logger.InfoContext(ctx, "smoke volume created", "volume_id", state.volumeID)
 	if err := waitForVolume(ctx, api, state.volumeID, cfg, func(status client.VolumeStatus) bool {
 		return status.Phase == "Bound"
@@ -411,24 +383,6 @@ func poll(ctx context.Context, interval time.Duration, check func() (bool, error
 
 func cleanup(ctx context.Context, api *client.Client, state *workerState, cfg config, logger *slog.Logger) error {
 	var failures []error
-	if state.vmUncertain {
-		vm, err := api.CreateVM(ctx, state.vmRequest, state.vmKey)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("recover uncertain VM create: %w", err))
-		} else {
-			state.vmID = vm.ID
-			state.vmUncertain = false
-		}
-	}
-	if state.volumeUncertain {
-		volume, err := api.CreateVolume(ctx, state.volumeRequest, state.volumeKey)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("recover uncertain volume create: %w", err))
-		} else {
-			state.volumeID = volume.ID
-			state.volumeUncertain = false
-		}
-	}
 	if state.attached && state.vmID != "" && state.volumeID != "" {
 		if err := api.DetachVolume(ctx, state.vmID, state.volumeID); err != nil {
 			failures = append(failures, fmt.Errorf("detach volume %s: %w", state.volumeID, err))

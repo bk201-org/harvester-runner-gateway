@@ -36,13 +36,12 @@ type Config struct {
 
 // Request describes one operation. Path contains individual, unescaped segments.
 type Request struct {
-	operation      string
-	Method         string
-	Path           []string
-	Body           any
-	IdempotencyKey string
-	Auth           bool
-	Statuses       []int
+	operation string
+	Method    string
+	Path      []string
+	Body      any
+	Auth      bool
+	Statuses  []int
 }
 
 type VMRequest struct {
@@ -298,14 +297,11 @@ func (c *Client) Do(ctx context.Context, operation Request) (data []byte, err er
 	if err != nil {
 		return nil, configError("cannot construct gateway request")
 	}
-	// Disable body replay even for requests carrying an idempotency key.
+	// Disable automatic body replay.
 	req.GetBody = nil
 	req.Header.Set("Accept", "application/json")
 	if operation.Body != nil {
 		req.Header.Set("Content-Type", "application/json")
-	}
-	if operation.IdempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", operation.IdempotencyKey)
 	}
 	var token string
 	if operation.Auth {
@@ -352,7 +348,7 @@ func (c *Client) Do(ctx context.Context, operation Request) (data []byte, err er
 		}
 		if json.Unmarshal(data, &remote) == nil && remote.Code != "" {
 			message := remote.Code + ": " + remote.Message
-			for _, secret := range []string{token, c.cfg.OIDCRequestToken, operation.IdempotencyKey} {
+			for _, secret := range []string{token, c.cfg.OIDCRequestToken} {
 				if secret != "" {
 					message = strings.ReplaceAll(message, secret, "[REDACTED]")
 				}

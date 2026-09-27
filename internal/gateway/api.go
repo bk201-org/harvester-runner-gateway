@@ -51,8 +51,6 @@ type VMStatus struct {
 	AttachedVolumeIDs []string  `json:"attachedVolumeIDs"`
 	Message           string    `json:"message,omitempty"`
 	ExpiresAt         time.Time `json:"expiresAt"`
-	RequestHash       string    `json:"-"`
-	IdentityHash      string    `json:"-"`
 }
 
 type VolumeStatus struct {
@@ -62,8 +60,6 @@ type VolumeStatus struct {
 	AttachedTo      string    `json:"attachedTo,omitempty"`
 	AttachmentPhase string    `json:"attachmentPhase,omitempty"`
 	ExpiresAt       time.Time `json:"expiresAt"`
-	RequestHash     string    `json:"-"`
-	IdentityHash    string    `json:"-"`
 }
 
 type Backend interface {
@@ -72,14 +68,14 @@ type Backend interface {
 	ListVMs(context.Context, config.RepositoryPolicy, auth.Owner) ([]VMStatus, error)
 	GetVM(context.Context, config.RepositoryPolicy, auth.Owner, string) (VMStatus, error)
 	ValidateVM(context.Context, config.RepositoryPolicy, VMRequest) error
-	CreateVM(context.Context, config.RepositoryPolicy, auth.Owner, string, VMRequest, time.Time, ResourceMetadata) (VMStatus, error)
+	CreateVM(context.Context, config.RepositoryPolicy, auth.Owner, string, VMRequest, time.Time) (VMStatus, error)
 	DeleteVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	PowerVM(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
 	RebootVM(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	CountVolumes(context.Context, config.RepositoryPolicy) (int, error)
 	ListVolumes(context.Context, config.RepositoryPolicy, auth.Owner) ([]VolumeStatus, error)
 	GetVolume(context.Context, config.RepositoryPolicy, auth.Owner, string) (VolumeStatus, error)
-	CreateVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, VolumeRequest, time.Time, ResourceMetadata) (VolumeStatus, error)
+	CreateVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, VolumeRequest, time.Time) (VolumeStatus, error)
 	DeleteVolume(context.Context, config.RepositoryPolicy, auth.Owner, string) error
 	AttachVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
 	DetachVolume(context.Context, config.RepositoryPolicy, auth.Owner, string, string) error
@@ -248,31 +244,11 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	key, ok := idempotencyKey(w, r)
-	if !ok {
-		return
-	}
-	identity := allocationIdentity(owner, "vm", key)
-	digest := requestHash(req)
 	r, finish, ok := s.beginRequestOperation(w, r)
 	if !ok {
 		return
 	}
 	defer finish()
-	id, mapped := s.allocator.lookup(policy.Namespace, owner, "vm", identity)
-	if mapped {
-		if existing, err := s.backend.GetVM(r.Context(), policy, owner, id); err == nil {
-			if existing.IdentityHash != identity || existing.RequestHash != digest {
-				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
-				return
-			}
-			writeJSON(w, http.StatusOK, existing)
-			return
-		} else if !errors.Is(err, ErrNotFound) {
-			s.backendError(w, r, err)
-			return
-		}
-	}
 	if err := s.backend.ValidateVM(r.Context(), policy, req); err != nil {
 		s.backendError(w, r, err)
 		return
@@ -286,16 +262,13 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request, owner auth.Own
 		writeError(w, http.StatusConflict, "quota_exceeded", "active VM quota reached")
 		return
 	}
-	if !mapped {
-		id, err = s.allocator.reserve(policy.Namespace, owner, "vm", identity)
-		if err != nil {
-			s.backendError(w, r, err)
-			return
-		}
+	id, err := s.allocator.reserve(policy.Namespace, owner, "vm")
+	if err != nil {
+		s.backendError(w, r, err)
+		return
 	}
-	metadata := ResourceMetadata{IdentityHash: identity, RequestHash: digest}
 	item, err := s.backend.CreateVM(r.Context(), policy, owner, id, req,
-		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), metadata)
+		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second))
 	if err != nil {
 		s.backendError(w, r, err)
 		return
@@ -387,31 +360,11 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	key, ok := idempotencyKey(w, r)
-	if !ok {
-		return
-	}
-	identity := allocationIdentity(owner, "volume", key)
-	digest := requestHash(req)
 	r, finish, ok := s.beginRequestOperation(w, r)
 	if !ok {
 		return
 	}
 	defer finish()
-	id, mapped := s.allocator.lookup(policy.Namespace, owner, "volume", identity)
-	if mapped {
-		if existing, err := s.backend.GetVolume(r.Context(), policy, owner, id); err == nil {
-			if existing.IdentityHash != identity || existing.RequestHash != digest {
-				writeError(w, http.StatusConflict, "idempotency_conflict", "key was used with a different request")
-				return
-			}
-			writeJSON(w, http.StatusOK, existing)
-			return
-		} else if !errors.Is(err, ErrNotFound) {
-			s.backendError(w, r, err)
-			return
-		}
-	}
 	count, err := s.backend.CountVolumes(r.Context(), policy)
 	if err != nil {
 		s.backendError(w, r, err)
@@ -421,16 +374,13 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request, owner auth
 		writeError(w, http.StatusConflict, "quota_exceeded", "active volume quota reached")
 		return
 	}
-	if !mapped {
-		id, err = s.allocator.reserve(policy.Namespace, owner, "volume", identity)
-		if err != nil {
-			s.backendError(w, r, err)
-			return
-		}
+	id, err := s.allocator.reserve(policy.Namespace, owner, "volume")
+	if err != nil {
+		s.backendError(w, r, err)
+		return
 	}
-	metadata := ResourceMetadata{IdentityHash: identity, RequestHash: digest}
 	item, err := s.backend.CreateVolume(r.Context(), policy, owner, id, req,
-		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second), metadata)
+		time.Now().Add(time.Duration(req.TTLSeconds)*time.Second))
 	if err != nil {
 		s.backendError(w, r, err)
 		return
@@ -536,15 +486,6 @@ func validQuantity(value, maximum string) bool {
 	return err == nil && quantity.Cmp(max) <= 0
 }
 
-func idempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
-	key := r.Header.Get("Idempotency-Key")
-	if len(key) < 1 || len(key) > 128 || !printableASCII(key) {
-		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must contain 1-128 printable characters")
-		return "", false
-	}
-	return key, true
-}
-
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 	decoder := json.NewDecoder(r.Body)
@@ -599,13 +540,4 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
-}
-
-func printableASCII(value string) bool {
-	for _, char := range value {
-		if char < 33 || char > 126 {
-			return false
-		}
-	}
-	return true
 }

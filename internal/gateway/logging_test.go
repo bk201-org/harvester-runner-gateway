@@ -55,18 +55,17 @@ func TestRequestLogContainsResponseMetadataWithoutSecrets(t *testing.T) {
 	}
 }
 
-func TestResourceLogContainsOwnershipWithoutIdempotencyKey(t *testing.T) {
+func TestResourceLogContainsOwnershipWithoutCredentials(t *testing.T) {
 	s := testServer(1, 1)
 	var output bytes.Buffer
 	s.logger = slog.New(slog.NewJSONHandler(&output, nil))
 
-	const key = "do-not-log-this-key"
-	response := doRequest(s, http.MethodPost, "/v1/vms", "run-one", key, vmRequest())
+	response := doRequest(s, http.MethodPost, "/v1/vms", "run-one", vmRequest())
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create status = %d: %s", response.Code, response.Body.String())
 	}
-	if strings.Contains(output.String(), key) || strings.Contains(output.String(), "run-one") {
-		t.Fatalf("log contains a credential or idempotency key: %s", output.String())
+	if strings.Contains(output.String(), "run-one") {
+		t.Fatalf("log contains a credential: %s", output.String())
 	}
 
 	records := decodeLogs(t, output.Bytes())

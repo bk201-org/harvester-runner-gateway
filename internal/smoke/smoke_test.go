@@ -32,16 +32,13 @@ type fakeGateway struct {
 	nextVolume    int
 	power         map[string]string
 	attached      map[string]string
-	vmKeys        map[string]string
-	volumeKeys    map[string]string
 	calls         map[string]int
 }
 
 func newFakeGateway(createTarget int) *fakeGateway {
 	return &fakeGateway{
 		createTarget: createTarget, createGate: make(chan struct{}), maxVMs: 3, maxVolumes: 3,
-		power: make(map[string]string), attached: make(map[string]string), vmKeys: make(map[string]string),
-		volumeKeys: make(map[string]string), calls: make(map[string]int),
+		power: make(map[string]string), attached: make(map[string]string), calls: make(map[string]int),
 	}
 }
 
@@ -57,45 +54,27 @@ func (f *fakeGateway) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/v1/vms" && r.Method == http.MethodPost {
-		key := r.Header.Get("Idempotency-Key")
 		f.mu.Lock()
-		id, exists := f.vmKeys[key]
-		if !exists {
-			f.nextVM++
-			id = fmt.Sprintf("vm%d", f.nextVM)
-			f.vmKeys[key] = id
-			f.power[id] = "on"
-			f.createStarted++
-			if f.createStarted == f.createTarget {
-				close(f.createGate)
-			}
+		f.nextVM++
+		id := fmt.Sprintf("vm%d", f.nextVM)
+		f.power[id] = "on"
+		f.createStarted++
+		if f.createStarted == f.createTarget {
+			close(f.createGate)
 		}
 		gate := f.createGate
 		f.mu.Unlock()
 		<-gate
-		if exists {
-			w.WriteHeader(http.StatusOK)
-		} else {
-			w.WriteHeader(http.StatusCreated)
-		}
+		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, client.VMStatus{ID: id, Phase: "Running", PowerState: "on", Ready: true, IPAddresses: []string{"10.0.0.10"}})
 		return
 	}
 	if r.URL.Path == "/v1/volumes" && r.Method == http.MethodPost {
-		key := r.Header.Get("Idempotency-Key")
 		f.mu.Lock()
-		id, exists := f.volumeKeys[key]
-		if !exists {
-			f.nextVolume++
-			id = fmt.Sprintf("vol%d", f.nextVolume)
-			f.volumeKeys[key] = id
-		}
+		f.nextVolume++
+		id := fmt.Sprintf("vol%d", f.nextVolume)
 		f.mu.Unlock()
-		if exists {
-			w.WriteHeader(http.StatusOK)
-		} else {
-			w.WriteHeader(http.StatusCreated)
-		}
+		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, client.VolumeStatus{ID: id, Phase: "Bound", Size: "1Gi"})
 		return
 	}
@@ -199,7 +178,7 @@ func smokeClient(t *testing.T, server *httptest.Server) *client.Client {
 func testConfig(concurrency int) config {
 	return config{
 		image: "default/image", network: "default/network", memory: "2Gi", bootDiskSize: "20Gi",
-		volumeSize: "1Gi", attempt: "test-attempt", concurrency: concurrency,
+		volumeSize: "1Gi", concurrency: concurrency,
 		waitTimeout: time.Second, pollInterval: time.Millisecond,
 	}
 }
@@ -215,8 +194,8 @@ func TestConcurrentFullLifecycles(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if fake.createStarted != 3 || len(fake.vmKeys) != 3 || len(fake.volumeKeys) != 3 {
-		t.Fatalf("creates=%d VM keys=%d volume keys=%d", fake.createStarted, len(fake.vmKeys), len(fake.volumeKeys))
+	if fake.createStarted != 3 || fake.nextVM != 3 || fake.nextVolume != 3 {
+		t.Fatalf("creates=%d VMs=%d volumes=%d", fake.createStarted, fake.nextVM, fake.nextVolume)
 	}
 	if len(fake.power) != 0 || len(fake.attached) != 0 {
 		t.Fatalf("resources remain: VMs=%v volumes=%v", fake.power, fake.attached)
@@ -285,7 +264,7 @@ func TestActionsOptInAndConcurrencyOverride(t *testing.T) {
 	env["GATEWAY_SMOKE"] = "1"
 	env["GATEWAY_SMOKE_CONCURRENCY"] = "4"
 	cfg, err := loadConfig(getenv)
-	if err != nil || cfg.concurrency != 4 || cfg.attempt != "123-2" {
+	if err != nil || cfg.concurrency != 4 {
 		t.Fatalf("config=%+v error=%v", cfg, err)
 	}
 }
@@ -304,7 +283,7 @@ func TestLocalConfigConcurrencyAndEnvironmentOverride(t *testing.T) {
 	env := map[string]string{"GATEWAY_SMOKE_CONFIG": configPath}
 	getenv := func(key string) string { return env[key] }
 	cfg, err := loadConfig(getenv)
-	if err != nil || cfg.concurrency != 5 || !strings.HasPrefix(cfg.attempt, "local-") {
+	if err != nil || cfg.concurrency != 5 {
 		t.Fatalf("config=%+v error=%v", cfg, err)
 	}
 	env["GATEWAY_SMOKE_CONCURRENCY"] = "2"

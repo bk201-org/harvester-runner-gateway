@@ -41,7 +41,7 @@ func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
 	vm, err := buildVM("ci", id, gateway.VMRequest{
 		Image: "default/ubuntu", Network: "default/vm-network", CPU: 2,
 		Memory: "4Gi", BootDiskSize: "20Gi",
-	}, "longhorn", labels, map[string]string{expiresKey: "1000", hashKey: testMetadata.RequestHash, identityKey: testMetadata.IdentityHash})
+	}, "longhorn", labels, map[string]string{expiresKey: "1000"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,14 +70,14 @@ func TestBuildVMUsesImageCloneAndCloudInitSecret(t *testing.T) {
 		t.Fatalf("wrong root claim: %v", metadata)
 	}
 	rootAnnotations := metadata["annotations"].(map[string]any)
-	if rootAnnotations[imageKey] != "default/ubuntu" || rootAnnotations[hashKey] != testMetadata.RequestHash || rootAnnotations[identityKey] != testMetadata.IdentityHash {
+	if rootAnnotations[imageKey] != "default/ubuntu" || rootAnnotations[expiresKey] != "1000" {
 		t.Fatalf("wrong root recovery metadata: %v", rootAnnotations)
 	}
 	templateAnnotations, _, err := unstructured.NestedStringMap(vm.Object, "spec", "template", "metadata", "annotations")
-	if err != nil || templateAnnotations[hashKey] != testMetadata.RequestHash || templateAnnotations[identityKey] != testMetadata.IdentityHash || templateAnnotations[expiresKey] != "1000" {
+	if err != nil || templateAnnotations[expiresKey] != "1000" {
 		t.Fatalf("wrong VMI template recovery metadata: %v, %v", templateAnnotations, err)
 	}
-	if vm.GetLabels()[repoLabel] != owner.RepositoryID || vm.GetAnnotations()[expiresKey] != "1000" || vm.GetAnnotations()[hashKey] != testMetadata.RequestHash || vm.GetAnnotations()[identityKey] != testMetadata.IdentityHash {
+	if vm.GetLabels()[repoLabel] != owner.RepositoryID || vm.GetAnnotations()[expiresKey] != "1000" {
 		t.Fatalf("wrong gateway metadata: labels=%v annotations=%v", vm.GetLabels(), vm.GetAnnotations())
 	}
 }

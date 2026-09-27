@@ -32,9 +32,6 @@ func TestTypedOperations(t *testing.T) {
 		case r.URL.Path == "/v1/quota":
 			fmt.Fprint(w, `{"maxActiveVMs":3,"activeVMs":0,"maxActiveVolumes":4,"activeVolumes":0}`)
 		case r.URL.Path == "/v1/vms" && r.Method == http.MethodPost:
-			if r.Header.Get("Idempotency-Key") != "vm-key" {
-				t.Error("missing VM idempotency key")
-			}
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, testVMStatus)
 		case r.URL.Path == "/v1/vms" && r.Method == http.MethodGet:
@@ -46,9 +43,6 @@ func TestTypedOperations(t *testing.T) {
 		case strings.HasPrefix(r.URL.Path, "/v1/vms/vm1/"):
 			w.WriteHeader(http.StatusAccepted)
 		case r.URL.Path == "/v1/volumes" && r.Method == http.MethodPost:
-			if r.Header.Get("Idempotency-Key") != "volume-key" {
-				t.Error("missing volume idempotency key")
-			}
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, testVolumeStatus)
 		case r.URL.Path == "/v1/volumes" && r.Method == http.MethodGet:
@@ -74,7 +68,7 @@ func TestTypedOperations(t *testing.T) {
 	if quota, err := api.Quota(ctx); err != nil || quota.MaxActiveVMs != 3 {
 		t.Fatalf("quota=%+v error=%v", quota, err)
 	}
-	if vm, err := api.CreateVM(ctx, VMRequest{Image: "default/image", Network: "default/net", CPU: 2, Memory: "2Gi", BootDiskSize: "20Gi"}, "vm-key"); err != nil || vm.ID != "vm1" {
+	if vm, err := api.CreateVM(ctx, VMRequest{Image: "default/image", Network: "default/net", CPU: 2, Memory: "2Gi", BootDiskSize: "20Gi"}); err != nil || vm.ID != "vm1" {
 		t.Fatalf("VM=%+v error=%v", vm, err)
 	}
 	if items, err := api.ListVMs(ctx); err != nil || len(items) != 1 {
@@ -89,7 +83,7 @@ func TestTypedOperations(t *testing.T) {
 	if err := api.RebootVM(ctx, "vm1"); err != nil {
 		t.Fatal(err)
 	}
-	if volume, err := api.CreateVolume(ctx, VolumeRequest{Size: "1Gi"}, "volume-key"); err != nil || volume.ID != "vol1" {
+	if volume, err := api.CreateVolume(ctx, VolumeRequest{Size: "1Gi"}); err != nil || volume.ID != "vol1" {
 		t.Fatalf("volume=%+v error=%v", volume, err)
 	}
 	if items, err := api.ListVolumes(ctx); err != nil || len(items) != 1 {
@@ -188,7 +182,7 @@ func TestStructuredLoggingAndRedaction(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&output, nil))
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
-		fmt.Fprint(w, `{"code":"conflict","message":"secret stable-key body-secret"}`)
+		fmt.Fprint(w, `{"code":"conflict","message":"secret body-secret"}`)
 	}))
 	defer server.Close()
 	cfg := configuration(t, server)
@@ -197,9 +191,9 @@ func TestStructuredLoggingAndRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer api.Close()
-	_, _ = api.CreateVM(context.Background(), VMRequest{Image: "body-secret"}, "stable-key")
+	_, _ = api.CreateVM(context.Background(), VMRequest{Image: "body-secret"})
 	logLine := output.String()
-	for _, secret := range []string{"secret", "stable-key", "body-secret"} {
+	for _, secret := range []string{"secret", "body-secret"} {
 		if strings.Contains(logLine, secret) {
 			t.Fatalf("log leaked %q: %s", secret, logLine)
 		}

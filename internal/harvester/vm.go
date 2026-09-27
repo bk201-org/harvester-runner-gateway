@@ -86,7 +86,7 @@ func (b *Backend) GetVM(ctx context.Context, policy config.RepositoryPolicy, own
 func (b *Backend) vmStatus(ctx context.Context, namespace string, vm *unstructured.Unstructured) (gateway.VMStatus, error) {
 	status := gateway.VMStatus{ID: vm.GetName(), Phase: nestedString(vm, "status", "printableStatus"),
 		PowerState: "off", IPAddresses: []string{}, AttachedVolumeIDs: []string{},
-		ExpiresAt: expiry(vm.GetAnnotations()), RequestHash: vm.GetAnnotations()[hashKey], IdentityHash: vm.GetAnnotations()[identityKey]}
+		ExpiresAt: expiry(vm.GetAnnotations())}
 	if status.Phase == "" {
 		status.Phase = "Provisioning"
 	}
@@ -163,7 +163,7 @@ func usableInterfaceIPs(vmi *unstructured.Unstructured, interfaceName string) []
 	return addresses
 }
 
-func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VMRequest, expires time.Time, metadata gateway.ResourceMetadata) (gateway.VMStatus, error) {
+func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string, req gateway.VMRequest, expires time.Time) (gateway.VMStatus, error) {
 	imageNS, imageName := splitName(req.Image)
 	image, err := b.dynamic.Resource(imageGVR).Namespace(imageNS).Get(ctx, imageName, metav1.GetOptions{})
 	if err != nil {
@@ -193,8 +193,8 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 		return gateway.VMStatus{}, fmt.Errorf("%w: %v", gateway.ErrInvalid, err)
 	}
 	labels := ownerLabels(owner, "vm")
-	values := annotations(expires, metadata)
-	if err := b.verifyVMDependencies(ctx, policy, owner, id, metadata); err != nil {
+	values := annotations(expires)
+	if err := b.verifyVMDependencies(ctx, policy, id); err != nil {
 		return gateway.VMStatus{}, err
 	}
 	secretName := id + "-init"
@@ -202,7 +202,7 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 	secretCreated := false
 	if _, err := b.kube.CoreV1().Secrets(policy.Namespace).Create(ctx, secret(policy.Namespace, secretName, secretLabels, values, userData), metav1.CreateOptions{}); err == nil {
 		secretCreated = true
-	} else if recoveryErr := b.recoverCloudInitSecret(ctx, policy, owner, secretName, values[expiresKey], metadata, err); recoveryErr != nil {
+	} else if recoveryErr := b.recoverCloudInitSecret(ctx, policy, owner, secretName, values[expiresKey], err); recoveryErr != nil {
 		return gateway.VMStatus{}, recoveryErr
 	}
 	vm, err := buildVM(policy.Namespace, id, req, storageClass, labels, values)
@@ -226,14 +226,14 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 			}
 			return gateway.VMStatus{}, translate(createErr)
 		}
-		if !matchingRecovery(existing.GetLabels(), existing.GetAnnotations(), owner, "vm", metadata) {
+		if !matchingCreate(existing.GetLabels(), existing.GetAnnotations(), owner, "vm", values[expiresKey]) {
 			return gateway.VMStatus{}, fmt.Errorf("%w: VM name is occupied", gateway.ErrConflict)
 		}
 		created = existing
 	}
 	if err := b.subresource(ctx, policy.Namespace, id, "start", map[string]any{}); err != nil {
 		vmi, getErr := b.dynamic.Resource(vmiGVR).Namespace(policy.Namespace).Get(ctx, id, metav1.GetOptions{})
-		if getErr == nil && matchingRecovery(vmi.GetLabels(), vmi.GetAnnotations(), owner, "vm", metadata) {
+		if getErr == nil && matchingCreate(vmi.GetLabels(), vmi.GetAnnotations(), owner, "vm", values[expiresKey]) {
 			return b.vmStatus(ctx, policy.Namespace, created)
 		}
 		if createdVM {
@@ -246,28 +246,23 @@ func (b *Backend) CreateVM(ctx context.Context, policy config.RepositoryPolicy, 
 	return b.vmStatus(ctx, policy.Namespace, created)
 }
 
-func (b *Backend) recoverCloudInitSecret(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, name, expires string, metadata gateway.ResourceMetadata, createErr error) error {
-	return retryOnConflict(func() error {
-		existing, err := b.kube.CoreV1().Secrets(policy.Namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return createErr
-			}
-			return err
+func (b *Backend) recoverCloudInitSecret(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, name, expires string, createErr error) error {
+	existing, err := b.kube.CoreV1().Secrets(policy.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return createErr
 		}
-		if existing.DeletionTimestamp != nil || !matchingRecovery(existing.Labels, existing.Annotations, owner, "cloud-init", metadata) {
-			return fmt.Errorf("%w: cloud-init Secret name is occupied or deleting", gateway.ErrConflict)
-		}
-		copy := existing.DeepCopy()
-		copy.Annotations[expiresKey] = expires
-		_, err = b.kube.CoreV1().Secrets(policy.Namespace).Update(ctx, copy, metav1.UpdateOptions{})
 		return err
-	})
+	}
+	if existing.DeletionTimestamp != nil || !matchingCreate(existing.Labels, existing.Annotations, owner, "cloud-init", expires) {
+		return fmt.Errorf("%w: cloud-init Secret name is occupied or deleting", gateway.ErrConflict)
+	}
+	return nil
 }
 
 func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, labels, values map[string]string) (*unstructured.Unstructured, error) {
 	rootName := id + "-root"
-	rootAnnotations := map[string]string{imageKey: req.Image, autoDelete: "true", expiresKey: values[expiresKey], hashKey: values[hashKey], identityKey: values[identityKey]}
+	rootAnnotations := map[string]string{imageKey: req.Image, autoDelete: "true", expiresKey: values[expiresKey]}
 	claimTemplate := []any{map[string]any{
 		"metadata": map[string]any{"name": rootName, "labels": stringMap(ownerLabels(auth.Owner{
 			RepositoryID: labels[repoLabel], RunID: labels[runLabel], RunAttempt: labels[attemptLabel]}, "vm-root")), "annotations": stringMap(rootAnnotations)},
@@ -278,7 +273,7 @@ func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, l
 	if err != nil {
 		return nil, err
 	}
-	metaAnnotations := map[string]any{claimKey: string(encoded), expiresKey: values[expiresKey], hashKey: values[hashKey], identityKey: values[identityKey]}
+	metaAnnotations := map[string]any{claimKey: string(encoded), expiresKey: values[expiresKey]}
 	networkRef := req.Network
 	if strings.HasPrefix(networkRef, namespace+"/") {
 		networkRef = strings.TrimPrefix(networkRef, namespace+"/")
