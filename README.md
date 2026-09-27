@@ -74,14 +74,18 @@ GitHub repository/run ownership fields.
 
 Authorization headers, idempotency keys, request bodies, SSH public keys, and
 cloud-init data are never logged. Collect stdout with the service manager or
-container runtime used to run the gateway.
+container runtime used to run the gateway. The CLI and smoke runner emit the
+same style of per-call JSON logs to stderr while reserving stdout for command
+responses and the final smoke result.
 
 ## Client CLI
 
-`make build` builds both the server and `bin/hvst-runner-gw-client`.
-The client uses HTTPS and supports every gateway API operation without needing
-`curl` or a Harvester kubeconfig. It can also be installed directly from this
-checkout with `go install ./cmd/hvst-runner-gw-client`.
+`make build` builds the server, `bin/hvst-runner-gw-client`, and the live smoke
+runner. The client uses HTTPS and supports every gateway API operation without
+needing `curl` or a Harvester kubeconfig. It can also be installed directly from
+this checkout with `go install ./cmd/hvst-runner-gw-client`. Go programs can
+import `github.com/bk201-org/harvester-runner-gateway/client` for typed VM,
+volume, quota, health, readiness, and lifecycle operations.
 
 For local use, configure the gateway's optional `localSmoke` credential as
 [described below](#local-shell), then point the client at the same token file:
@@ -169,8 +173,9 @@ for each invocation using `ACTIONS_ID_TOKEN_REQUEST_URL` and
 builds the client, creates a VM, reads its status, and requests cleanup.
 
 The client exits with `0` on success, `1` for HTTP, authentication, or transport
-failures, and `2` for invalid usage or local configuration. Errors go to stderr
-and include the HTTP status and gateway error code/message when available.
+failures, and `2` for invalid usage or local configuration. Structured request
+logs and errors go to stderr; errors include the HTTP status and gateway error
+code/message when available.
 Creation and action commands return as soon as the gateway accepts the request;
 poll `vm get` or `volume get` to observe completion. Mutations are not
 automatically retried. Deleting an absent resource remains an HTTP 404 failure.
@@ -256,12 +261,14 @@ one; it does not prove SSH or a guest service is ready.
 
 Unit tests and builds run without a cluster. Live creation, actions, hotplug,
 and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
-before production use. The [smoke script](scripts/smoke.sh) creates a VM and an
-independent volume, exercises hotplug, power, and reboot, and cleans up both.
-It requires `bash`, `jq`, and the client built by `make build`; local runs also
-require `od` and `tr`. Set `GATEWAY_CLIENT` to use a client binary outside the
-default `bin/` directory. Use a gateway URL whose certificate is trusted by the
-machine running the script.
+before production use. The [smoke script](scripts/smoke.sh) launches the Go smoke
+runner, which defaults to three concurrent workers. Every worker creates a VM
+and independent volume, exercises hotplug, power, and reboot, and cleans up both.
+The runner checks that enough VM and volume quota is available before creating
+anything. Build it with `make build`; set `GATEWAY_SMOKE_BINARY` to select a
+binary outside `bin/`. The selected policy must have at least three available
+VM and volume slots for the default run. Set `GATEWAY_SMOKE_CONCURRENCY` to a
+positive integer to use another worker count.
 
 ### GitHub Actions
 
@@ -320,12 +327,15 @@ absolute paths and your approved image and network:
   "image": "default/ubuntu-24-04",
   "network": "default/vm-network",
   "tokenFile": "/home/you/.config/harvester-runner-gateway/local-smoke-token",
-  "caCert": "/home/you/.config/harvester-runner-gateway/gateway.crt"
+  "caCert": "/home/you/.config/harvester-runner-gateway/gateway.crt",
+  "concurrency": 3
 }
 ```
 
-`caCert` is optional. Set it to the self-signed gateway certificate or the PEM
-CA certificate that signed the gateway certificate. The certificate must match
+`caCert` and `concurrency` are optional. The concurrency defaults to three and
+`GATEWAY_SMOKE_CONCURRENCY` overrides the file. Set `caCert` to the self-signed
+gateway certificate or the PEM CA certificate that signed the gateway
+certificate. The certificate must match
 the hostname in `gatewayURL`; the script keeps TLS verification enabled.
 
 Keep the token file readable only by its owner (`chmod 600`). It is a bearer
@@ -338,6 +348,8 @@ its token file to rotate the credential. Then run:
 ```
 
 Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another local
-configuration. The direct shell run does not need `GATEWAY_SMOKE=1`; running the
-script is the explicit opt-in. The gateway has no deployment manifest because
+configuration. The Go runner validates configuration and quota before starting
+all workers behind a shared concurrency barrier. The direct shell run does not
+need `GATEWAY_SMOKE=1`; running the script is the explicit opt-in. The gateway
+has no deployment manifest because
 TLS, network reachability, image/network names, and RBAC are site-specific.

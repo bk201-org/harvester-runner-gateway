@@ -28,5 +28,5 @@ repositories:
     maxBootDiskSize: 40Gi
     maxVolumeSize: 100Gi
     quota:
-      maxActiveVMs: 2
+      maxActiveVMs: 3
       maxActiveVolumes: 4

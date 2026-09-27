@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,8 +15,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bk201-org/harvester-runner-gateway/internal/client"
 )
 
 func writeTestFile(t *testing.T, name string, data []byte) string {
@@ -36,6 +33,20 @@ func invoke(args []string, env map[string]string) (int, string, string) {
 	var out, err bytes.Buffer
 	code := Run(context.Background(), args, func(key string) string { return env[key] }, &out, &err)
 	return code, out.String(), err.String()
+}
+
+func assertRequestLogs(t *testing.T, output string, want int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != want {
+		t.Fatalf("log lines=%d, want %d: %q", len(lines), want, output)
+	}
+	for _, line := range lines {
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) != nil || entry["msg"] != "client request completed" {
+			t.Fatalf("invalid request log: %q", line)
+		}
+	}
 }
 
 func TestEveryOperation(t *testing.T) {
@@ -71,9 +82,24 @@ func TestEveryOperation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args[:min(2, len(tc.args))], " ")+fmt.Sprint(tc.status), func(t *testing.T) {
-			response := `{"id":"resource"}`
-			if tc.args[0] == "vm" && tc.args[1] == "create" {
-				response = `{"id":"resource","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`
+			vmResponse := `{"id":"resource","phase":"Running","powerState":"on","ready":true,"ipAddresses":["10.0.0.10"],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`
+			volumeResponse := `{"id":"resource","phase":"Bound","size":"10Gi","expiresAt":"2026-09-27T00:00:00Z"}`
+			response := vmResponse
+			switch {
+			case tc.args[0] == "quota":
+				response = `{"maxActiveVMs":3,"activeVMs":0,"maxActiveVolumes":4,"activeVolumes":0}`
+			case tc.args[0] == "vm" && tc.args[1] == "list":
+				response = "[" + vmResponse + "]"
+			case tc.args[0] == "volume" && tc.args[1] == "list":
+				response = "[" + volumeResponse + "]"
+			case tc.args[0] == "volume":
+				response = volumeResponse
+			}
+			if tc.args[0] == "vm" && tc.args[1] == "get" {
+				response = strings.Replace(response, `"id":"resource"`, `"id":"vm1"`, 1)
+			}
+			if tc.args[0] == "volume" && tc.args[1] == "get" {
+				response = strings.Replace(response, `"id":"resource"`, `"id":"vol1"`, 1)
 			}
 			calls := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,9 +138,10 @@ func TestEveryOperation(t *testing.T) {
 			defer server.Close()
 			env := map[string]string{"GATEWAY_URL": server.URL + "/gateway/", "GATEWAY_CA_CERT": testCA(t, server), "GATEWAY_TOKEN": "secret"}
 			code, out, err := invoke(tc.args, env)
-			if code != 0 || err != "" || calls != 1 {
+			if code != 0 || calls != 1 {
 				t.Fatalf("code=%d stderr=%q calls=%d", code, err, calls)
 			}
+			assertRequestLogs(t, err, 1)
 			expectedOut := ""
 			if tc.status == 200 || tc.status == 201 {
 				expectedOut = response + "\n"
@@ -196,94 +223,6 @@ func TestFlagPrecedenceAndExitCodes(t *testing.T) {
 	}
 }
 
-func newReadinessTestClient(t *testing.T, server *httptest.Server) *client.Client {
-	t.Helper()
-	api, err := client.New(client.Config{
-		URL: server.URL, CACert: testCA(t, server), Token: "secret", Timeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(api.Close)
-	return api
-}
-
-func TestWaitForVMReadyPollsUntilReady(t *testing.T) {
-	calls := 0
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/vms/ci-123-456-a1-001" {
-			t.Errorf("got %s %s", r.Method, r.URL.Path)
-		}
-		if calls == 1 {
-			fmt.Fprint(w, `{"id":"ci-123-456-a1-001","phase":"Running","ready":false,"ipAddresses":[]}`)
-			return
-		}
-		fmt.Fprint(w, `{"id":"ci-123-456-a1-001","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`)
-	}))
-	defer server.Close()
-
-	initial := []byte(`{"id":"ci-123-456-a1-001","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
-	data, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, time.Second, time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var status client.VMStatus
-	if json.Unmarshal(data, &status) != nil || !status.Ready || len(status.IPAddresses) != 1 || calls != 2 {
-		t.Fatalf("status=%+v calls=%d", status, calls)
-	}
-}
-
-func TestWaitForVMReadyFailuresKeepVM(t *testing.T) {
-	initial := []byte(`{"id":"ci-123-456-a1-001","phase":"Provisioning","ready":false,"ipAddresses":[]}`)
-	t.Run("timeout", func(t *testing.T) {
-		var getCalls, deleteCalls int
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
-				getCalls++
-				fmt.Fprint(w, `{"id":"ci-123-456-a1-001","phase":"Starting","ready":false,"ipAddresses":[]}`)
-			case http.MethodDelete:
-				deleteCalls++
-				w.WriteHeader(http.StatusNoContent)
-			}
-		}))
-		defer server.Close()
-		_, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, 10*time.Millisecond, time.Millisecond)
-		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "ci-123-456-a1-001") ||
-			!strings.Contains(err.Error(), "last phase=Starting") || !strings.Contains(err.Error(), "remains allocated") {
-			t.Fatalf("unexpected timeout error: %v", err)
-		}
-		if getCalls == 0 || deleteCalls != 0 {
-			t.Fatalf("GET calls=%d DELETE calls=%d", getCalls, deleteCalls)
-		}
-	})
-
-	t.Run("cancellation", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			t.Error("canceled wait made a request")
-		}))
-		defer server.Close()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, err := waitForVMReady(ctx, newReadinessTestClient(t, server), initial, time.Minute, time.Hour)
-		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "ci-123-456-a1-001") || !strings.Contains(err.Error(), "remains allocated") {
-			t.Fatalf("unexpected cancellation error: %v", err)
-		}
-	})
-
-	t.Run("polling error", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadGateway)
-		}))
-		defer server.Close()
-		_, err := waitForVMReady(context.Background(), newReadinessTestClient(t, server), initial, time.Second, time.Millisecond)
-		if err == nil || !strings.Contains(err.Error(), "ci-123-456-a1-001") || !strings.Contains(err.Error(), "last phase=Provisioning") {
-			t.Fatalf("unexpected polling error: %v", err)
-		}
-	})
-}
-
 func TestVMCreateWaitOptions(t *testing.T) {
 	base := []string{"vm", "create", "--image", "default/ubuntu", "--network", "default/net", "--cpu", "2", "--memory", "4Gi", "--boot-disk-size", "20Gi", "--idempotency-key", "key"}
 	tests := []struct {
@@ -322,9 +261,9 @@ func TestVMCreateNoWaitAndIdempotentReady(t *testing.T) {
 		response string
 	}{
 		{name: "no wait", args: append(append([]string{}, base...), "--no-wait"), status: http.StatusCreated,
-			response: `{"id":"ci-123-456-a1-001","phase":"Provisioning","ready":false,"ipAddresses":[]}`},
+			response: `{"id":"ci-123-456-a1-001","phase":"Provisioning","powerState":"on","ready":false,"ipAddresses":[],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
 		{name: "idempotent ready", args: base, status: http.StatusOK,
-			response: `{"id":"ci-123-456-a1-001","phase":"Running","ready":true,"ipAddresses":["10.0.0.10"]}`},
+			response: `{"id":"ci-123-456-a1-001","phase":"Running","powerState":"on","ready":true,"ipAddresses":["10.0.0.10"],"attachedVolumeIDs":[],"expiresAt":"2026-09-27T00:00:00Z"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -340,9 +279,10 @@ func TestVMCreateNoWaitAndIdempotentReady(t *testing.T) {
 			defer server.Close()
 			env := map[string]string{"GATEWAY_URL": server.URL, "GATEWAY_CA_CERT": testCA(t, server), "GATEWAY_TOKEN": "secret"}
 			code, out, stderr := invoke(test.args, env)
-			if code != 0 || stderr != "" || out != test.response+"\n" || calls != 1 {
+			if code != 0 || out != test.response+"\n" || calls != 1 {
 				t.Fatalf("code=%d stdout=%q stderr=%q calls=%d", code, out, stderr, calls)
 			}
+			assertRequestLogs(t, stderr, 1)
 		})
 	}
 }

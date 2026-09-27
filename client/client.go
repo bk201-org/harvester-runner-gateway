@@ -1,4 +1,4 @@
-// Package client implements the gateway's HTTPS transport and authentication.
+// Package client implements the gateway's typed API, HTTPS transport, and authentication.
 package client
 
 import (
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,6 +36,7 @@ type Config struct {
 
 // Request describes one operation. Path contains individual, unescaped segments.
 type Request struct {
+	operation      string
 	Method         string
 	Path           []string
 	Body           any
@@ -55,10 +57,14 @@ type VMRequest struct {
 }
 
 type VMStatus struct {
-	ID          string   `json:"id"`
-	Phase       string   `json:"phase"`
-	Ready       bool     `json:"ready"`
-	IPAddresses []string `json:"ipAddresses"`
+	ID                string    `json:"id"`
+	Phase             string    `json:"phase"`
+	PowerState        string    `json:"powerState"`
+	Ready             bool      `json:"ready"`
+	IPAddresses       []string  `json:"ipAddresses"`
+	AttachedVolumeIDs []string  `json:"attachedVolumeIDs"`
+	Message           string    `json:"message,omitempty"`
+	ExpiresAt         time.Time `json:"expiresAt"`
 }
 
 type VolumeRequest struct {
@@ -66,15 +72,45 @@ type VolumeRequest struct {
 	TTLSeconds *int   `json:"ttlSeconds,omitempty"`
 }
 
+type VolumeStatus struct {
+	ID              string    `json:"id"`
+	Phase           string    `json:"phase"`
+	Size            string    `json:"size"`
+	AttachedTo      string    `json:"attachedTo,omitempty"`
+	AttachmentPhase string    `json:"attachmentPhase,omitempty"`
+	ExpiresAt       time.Time `json:"expiresAt"`
+}
+
+type Quota struct {
+	MaxActiveVMs     int `json:"maxActiveVMs"`
+	ActiveVMs        int `json:"activeVMs"`
+	MaxActiveVolumes int `json:"maxActiveVolumes"`
+	ActiveVolumes    int `json:"activeVolumes"`
+}
+
+type PowerState string
+
+const (
+	PowerOn  PowerState = "on"
+	PowerOff PowerState = "off"
+)
+
 type Client struct {
 	cfg           Config
 	base          *url.URL
 	gateway, oidc *http.Client
+	logger        *slog.Logger
 }
 
 func rejectRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
 func New(cfg Config) (*Client, error) {
+	return NewWithLogger(cfg, nil)
+}
+
+// NewWithLogger creates a client that emits one structured completion entry
+// for every gateway and OIDC HTTP call. A nil logger disables logging.
+func NewWithLogger(cfg Config, logger *slog.Logger) (*Client, error) {
 	base, err := url.Parse(cfg.URL)
 	if err != nil || base.Scheme != "https" || base.Hostname() == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" || strings.Contains(cfg.URL, "#") || base.Opaque != "" {
 		return nil, configError("--url must be an HTTPS URL without credentials, query, or fragment")
@@ -101,9 +137,13 @@ func New(cfg Config) (*Client, error) {
 		}
 		transport.TLSClientConfig.RootCAs = roots
 	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &Client{cfg: cfg, base: base,
 		gateway: &http.Client{Transport: transport, Timeout: cfg.Timeout, CheckRedirect: rejectRedirect},
 		oidc:    &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: cfg.Timeout, CheckRedirect: rejectRedirect},
+		logger:  logger,
 	}, nil
 }
 
@@ -121,7 +161,7 @@ func validToken(token string) bool {
 	return true
 }
 
-func (c *Client) token(ctx context.Context) (string, error) {
+func (c *Client) token(ctx context.Context) (token string, err error) {
 	if c.cfg.TokenFile != "" {
 		data, err := os.ReadFile(c.cfg.TokenFile)
 		if err != nil {
@@ -154,25 +194,68 @@ func (c *Client) token(ctx context.Context) (string, error) {
 		return "", errors.New("cannot construct GitHub Actions OIDC request")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.OIDCRequestToken)
-	res, err := c.oidc.Do(req)
-	if err != nil {
-		return "", transportError("OIDC request", err)
+	started := time.Now()
+	status := 0
+	responseBytes := 0
+	defer func() {
+		c.logHTTP(ctx, "oidc request", http.MethodGet, "", status, responseBytes, started, err)
+	}()
+	res, requestErr := c.oidc.Do(req)
+	if requestErr != nil {
+		err = transportError("OIDC request", requestErr)
+		return "", err
 	}
+	status = res.StatusCode
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OIDC request: HTTP %d", res.StatusCode)
+	body, readErr := readBody(res.Body)
+	responseBytes = len(body)
+	if readErr != nil {
+		err = fmt.Errorf("OIDC response: %w", readErr)
+		return "", err
 	}
-	body, err := readBody(res.Body)
-	if err != nil {
-		return "", fmt.Errorf("OIDC response: %w", err)
+	if res.StatusCode != http.StatusOK {
+		err = fmt.Errorf("OIDC request: HTTP %d", res.StatusCode)
+		return "", err
 	}
 	var response struct {
 		Value string `json:"value"`
 	}
 	if json.Unmarshal(body, &response) != nil || !validToken(response.Value) {
-		return "", errors.New("OIDC response did not contain a valid token")
+		err = errors.New("OIDC response did not contain a valid token")
+		return "", err
 	}
 	return response.Value, nil
+}
+
+func (c *Client) logHTTP(ctx context.Context, operation, method, path string, status, responseBytes int, started time.Time, err error) {
+	level := slog.LevelInfo
+	if err != nil {
+		if status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+			level = slog.LevelWarn
+		} else {
+			level = slog.LevelError
+		}
+	}
+	attrs := []slog.Attr{
+		slog.String("operation", operation),
+		slog.String("method", method),
+		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+		slog.Int("response_bytes", responseBytes),
+	}
+	if path != "" {
+		attrs = append(attrs, slog.String("path", path))
+	}
+	if status != 0 {
+		attrs = append(attrs, slog.Int("status", status))
+	}
+	if err != nil {
+		loggedError := operation + " failed"
+		if status != 0 {
+			loggedError = fmt.Sprintf("%s failed with HTTP %d", operation, status)
+		}
+		attrs = append(attrs, slog.String("error", loggedError))
+	}
+	c.logger.LogAttrs(ctx, level, "client request completed", attrs...)
 }
 
 func transportError(operation string, err error) error {
@@ -186,19 +269,18 @@ func transportError(operation string, err error) error {
 func readBody(r io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
 	if err != nil {
-		return nil, errors.New("cannot read response body")
+		return data, errors.New("cannot read response body")
 	}
 	if len(data) > maxResponseBytes {
-		return nil, errors.New("response body exceeds 4 MiB")
+		return data, errors.New("response body exceeds 4 MiB")
 	}
 	return data, nil
 }
 
 // Do performs a single request without application-level retries. JSON is
 // returned unchanged; successful operations without response bodies return nil.
-func (c *Client) Do(ctx context.Context, operation Request) ([]byte, error) {
+func (c *Client) Do(ctx context.Context, operation Request) (data []byte, err error) {
 	var body []byte
-	var err error
 	if operation.Body != nil {
 		body, err = json.Marshal(operation.Body)
 		if err != nil {
@@ -233,14 +315,28 @@ func (c *Client) Do(ctx context.Context, operation Request) ([]byte, error) {
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	res, err := c.gateway.Do(req)
-	if err != nil {
-		return nil, transportError("gateway request", err)
+	started := time.Now()
+	operationName := operation.operation
+	if operationName == "" {
+		operationName = "gateway request"
 	}
+	status := 0
+	responseBytes := 0
+	defer func() {
+		c.logHTTP(ctx, operationName, req.Method, req.URL.EscapedPath(), status, responseBytes, started, err)
+	}()
+	res, requestErr := c.gateway.Do(req)
+	if requestErr != nil {
+		err = transportError("gateway request", requestErr)
+		return nil, err
+	}
+	status = res.StatusCode
 	defer res.Body.Close()
-	data, err := readBody(res.Body)
+	data, err = readBody(res.Body)
+	responseBytes = len(data)
 	if err != nil {
-		return nil, fmt.Errorf("gateway HTTP %d: %w", res.StatusCode, err)
+		err = fmt.Errorf("gateway HTTP %d: %w", res.StatusCode, err)
+		return nil, err
 	}
 	success := false
 	for _, status := range operation.Statuses {
@@ -256,23 +352,27 @@ func (c *Client) Do(ctx context.Context, operation Request) ([]byte, error) {
 		}
 		if json.Unmarshal(data, &remote) == nil && remote.Code != "" {
 			message := remote.Code + ": " + remote.Message
-			for _, secret := range []string{token, c.cfg.OIDCRequestToken} {
+			for _, secret := range []string{token, c.cfg.OIDCRequestToken, operation.IdempotencyKey} {
 				if secret != "" {
 					message = strings.ReplaceAll(message, secret, "[REDACTED]")
 				}
 			}
-			return nil, fmt.Errorf("gateway HTTP %d: %s", res.StatusCode, message)
+			err = fmt.Errorf("gateway HTTP %d: %s", res.StatusCode, message)
+			return nil, err
 		}
-		return nil, fmt.Errorf("gateway HTTP %d: unexpected or non-JSON error response", res.StatusCode)
+		err = fmt.Errorf("gateway HTTP %d: unexpected or non-JSON error response", res.StatusCode)
+		return nil, err
 	}
 	if res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusAccepted {
 		if len(bytes.TrimSpace(data)) != 0 {
-			return nil, errors.New("gateway returned an unexpected response body")
+			err = errors.New("gateway returned an unexpected response body")
+			return nil, err
 		}
 		return nil, nil
 	}
 	if !json.Valid(data) {
-		return nil, errors.New("gateway returned malformed JSON")
+		err = errors.New("gateway returned malformed JSON")
+		return nil, err
 	}
 	return data, nil
 }

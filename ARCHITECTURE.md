@@ -8,7 +8,7 @@ cluster credentials. [OpenAPI](openapi.yaml) defines the public API.
 ```mermaid
 flowchart LR
     Job[GitHub Actions job] -->|HTTPS + OIDC token| API[Gateway API]
-    Shell[Local smoke script] -->|HTTPS + smoke token| API
+    Smoke[Concurrent Go smoke runner] -->|HTTPS + smoke token| API
     API --> Auth[Token verifier and repository policy]
     API --> Backend[Harvester backend]
     Backend -->|Kubernetes API| Cluster[Harvester cluster]
@@ -111,4 +111,6 @@ a gateway restart. Deleting a VM does not delete its independent volumes.
 | Kubernetes clients, metadata, recovery scan | [`internal/harvester/backend.go`](internal/harvester/backend.go), [`internal/harvester/allocation.go`](internal/harvester/allocation.go) |
 | VM lookup, status, creation, and actions | [`internal/harvester/vm.go`](internal/harvester/vm.go) |
 | Volume status and expiry cleanup | [`internal/harvester/volume.go`](internal/harvester/volume.go) |
+| Public typed client and transport | [`client/`](client/) |
+| Concurrent smoke orchestration | [`internal/smoke/smoke.go`](internal/smoke/smoke.go) |
 | Startup and cleanup schedule | [`cmd/hvst-runner-gw/main.go`](cmd/hvst-runner-gw/main.go) |

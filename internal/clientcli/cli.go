@@ -9,22 +9,26 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/bk201-org/harvester-runner-gateway/internal/client"
+	"github.com/bk201-org/harvester-runner-gateway/client"
 )
 
 const defaultVMWaitTimeout = 5 * time.Minute
 const vmPollInterval = 3 * time.Second
 
 type command struct {
-	client.Request
-	waitForVM   bool
-	waitTimeout time.Duration
+	kind, action, id, second string
+	vmRequest                client.VMRequest
+	volumeRequest            client.VolumeRequest
+	idempotencyKey           string
+	waitForVM                bool
+	waitTimeout              time.Duration
 }
 
 const rootHelp = `Usage: hvst-runner-gw-client [global flags] COMMAND
@@ -115,16 +119,19 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stderr, "--timeout must be a positive duration, such as 30s")
 		return 2
 	}
-	api, err := client.New(cfg)
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	api, err := client.NewWithLogger(cfg, logger)
 	if err == nil {
 		defer api.Close()
-		var data []byte
-		data, err = api.Do(ctx, operation.Request)
-		if err == nil && operation.waitForVM {
-			data, err = waitForVMReady(ctx, api, data, operation.waitTimeout, vmPollInterval)
-		}
-		if err == nil && len(data) > 0 {
-			_, err = fmt.Fprintln(stdout, strings.TrimSpace(string(data)))
+		var output any
+		var hasOutput bool
+		output, hasOutput, err = execute(ctx, api, operation)
+		if err == nil && hasOutput {
+			var data []byte
+			data, err = json.Marshal(output)
+			if err == nil {
+				_, err = fmt.Fprintln(stdout, string(data))
+			}
 		}
 	}
 	if err != nil {
@@ -138,67 +145,108 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	return 0
 }
 
+func execute(ctx context.Context, api *client.Client, op command) (any, bool, error) {
+	switch op.kind {
+	case "health":
+		return nil, false, api.Health(ctx)
+	case "ready":
+		return nil, false, api.Ready(ctx)
+	case "quota":
+		value, err := api.Quota(ctx)
+		return value, true, err
+	case "vm":
+		switch op.action {
+		case "create":
+			status, err := api.CreateVM(ctx, op.vmRequest, op.idempotencyKey)
+			if err == nil && op.waitForVM && !status.Ready {
+				waitCtx, cancel := context.WithTimeout(ctx, op.waitTimeout)
+				defer cancel()
+				status, err = api.WaitForVMReady(waitCtx, status.ID, vmPollInterval)
+			}
+			return status, true, err
+		case "list":
+			value, err := api.ListVMs(ctx)
+			return value, true, err
+		case "get":
+			value, err := api.GetVM(ctx, op.id)
+			return value, true, err
+		case "delete":
+			return nil, false, api.DeleteVM(ctx, op.id)
+		case "power":
+			return nil, false, api.SetVMPower(ctx, op.id, client.PowerState(op.second))
+		case "reboot":
+			return nil, false, api.RebootVM(ctx, op.id)
+		case "attach":
+			return nil, false, api.AttachVolume(ctx, op.id, op.second)
+		case "detach":
+			return nil, false, api.DetachVolume(ctx, op.id, op.second)
+		}
+	case "volume":
+		switch op.action {
+		case "create":
+			value, err := api.CreateVolume(ctx, op.volumeRequest, op.idempotencyKey)
+			return value, true, err
+		case "list":
+			value, err := api.ListVolumes(ctx)
+			return value, true, err
+		case "get":
+			value, err := api.GetVolume(ctx, op.id)
+			return value, true, err
+		case "delete":
+			return nil, false, api.DeleteVolume(ctx, op.id)
+		}
+	}
+	return nil, false, errors.New("unsupported client operation")
+}
+
 var resourceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (command, error) {
-	op := command{Request: client.Request{Method: "GET", Auth: true, Statuses: []int{200}}}
-	command := args[0]
+	op := command{}
+	name := args[0]
 	rest := args[1:]
-	switch command {
+	switch name {
 	case "health", "ready", "quota":
-		fs := flagSet(command, output, "Usage: hvst-runner-gw-client [global flags] "+command)
+		fs := flagSet(name, output, "Usage: hvst-runner-gw-client [global flags] "+name)
 		if err := fs.Parse(rest); err != nil {
 			return op, err
 		}
 		if fs.NArg() != 0 {
-			return op, fmt.Errorf("%s takes no arguments", command)
+			return op, fmt.Errorf("%s takes no arguments", name)
 		}
-		if command == "quota" {
-			op.Path = []string{"v1", "quota"}
-		} else {
-			op.Path = []string{command + "z"}
-			op.Auth = false
-			op.Statuses = []int{204}
-		}
+		op.kind = name
 		return op, nil
 	case "vm", "volume":
 	default:
-		return op, fmt.Errorf("unknown command %q; use --help", command)
+		return op, fmt.Errorf("unknown command %q; use --help", name)
 	}
 	if len(rest) == 0 || rest[0] == "--help" || rest[0] == "-h" {
 		fmt.Fprint(output, rootHelp)
 		if len(rest) == 0 {
-			return op, fmt.Errorf("%s requires a subcommand", command)
+			return op, fmt.Errorf("%s requires a subcommand", name)
 		}
 		return op, flag.ErrHelp
 	}
 	action := rest[0]
 	rest = rest[1:]
-	plural := command + "s"
-	op.Path = []string{"v1", plural}
 	if action == "create" {
-		return parseCreate(command, rest, output, vmWaitTimeout)
+		return parseCreate(name, rest, output, vmWaitTimeout)
 	}
 	expected := 0
 	switch action {
 	case "list":
-	case "get":
+	case "get", "delete":
 		expected = 1
-	case "delete":
-		expected = 1
-		op.Method = "DELETE"
-		op.Statuses = []int{204}
 	case "power", "reboot", "attach", "detach":
-		if command != "vm" {
+		if name != "vm" {
 			return op, fmt.Errorf("unknown volume subcommand %q", action)
 		}
 		expected = 1
 		if action != "reboot" {
 			expected = 2
 		}
-		op.Statuses = []int{202}
 	default:
-		return op, fmt.Errorf("unknown %s subcommand %q", command, action)
+		return op, fmt.Errorf("unknown %s subcommand %q", name, action)
 	}
 	suffix := ""
 	if expected > 0 {
@@ -210,8 +258,7 @@ func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (comman
 	if action == "attach" || action == "detach" {
 		suffix += " VOLUME_ID"
 	}
-	fs := flagSet(command+" "+action, output, "Usage: hvst-runner-gw-client [global flags] "+command+" "+action+suffix)
-	// Permit help after positional IDs as well as immediately after the command.
+	fs := flagSet(name+" "+action, output, "Usage: hvst-runner-gw-client [global flags] "+name+" "+action+suffix)
 	for _, arg := range rest {
 		if arg == "--help" || arg == "-h" {
 			fs.Usage()
@@ -222,7 +269,7 @@ func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (comman
 		return op, err
 	}
 	if fs.NArg() != expected {
-		return op, fmt.Errorf("%s %s requires %d argument(s)", command, action, expected)
+		return op, fmt.Errorf("%s %s requires %d argument(s)", name, action, expected)
 	}
 	for i, arg := range fs.Args() {
 		if action == "power" && i == 1 {
@@ -232,28 +279,15 @@ func parseCommand(args []string, output io.Writer, vmWaitTimeout string) (comman
 			return op, errors.New("resource IDs must start with an alphanumeric character and contain only letters, digits, '.', '_', or '-'")
 		}
 	}
+	op.kind, op.action = name, action
 	if expected > 0 {
-		op.Path = append(op.Path, fs.Arg(0))
+		op.id = fs.Arg(0)
 	}
-	switch action {
-	case "power":
-		if fs.Arg(1) != "on" && fs.Arg(1) != "off" {
-			return op, errors.New("power state must be on or off")
-		}
-		op.Method = "PUT"
-		op.Path = append(op.Path, "power")
-		op.Body = struct {
-			State string `json:"state"`
-		}{fs.Arg(1)}
-	case "reboot":
-		op.Method = "POST"
-		op.Path = append(op.Path, "reboot")
-	case "attach", "detach":
-		op.Method = "PUT"
-		if action == "detach" {
-			op.Method = "DELETE"
-		}
-		op.Path = append(op.Path, "volumes", fs.Arg(1))
+	if expected > 1 {
+		op.second = fs.Arg(1)
+	}
+	if action == "power" && op.second != "on" && op.second != "off" {
+		return op, errors.New("power state must be on or off")
 	}
 	return op, nil
 }
@@ -263,7 +297,6 @@ type stringList []string
 func (s *stringList) String() string         { return strings.Join(*s, ", ") }
 func (s *stringList) Set(value string) error { *s = append(*s, value); return nil }
 
-// Validate quantity syntax locally; policy limits remain the server's concern.
 var quantityPattern = regexp.MustCompile(`^([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))((?:[eE][+-]?[0-9]+)|(?:[KMGTPE]i)|[numkMGTPE]?)$`)
 
 func positiveQuantity(value string) bool {
@@ -276,27 +309,25 @@ func positiveQuantity(value string) bool {
 }
 
 func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeout string) (command, error) {
-	op := command{Request: client.Request{Method: "POST", Path: []string{"v1", kind + "s"}, Auth: true, Statuses: []int{200, 201}}}
+	op := command{kind: kind, action: "create"}
 	fs := flagSet(kind+" create", output, "Usage: hvst-runner-gw-client [global flags] "+kind+" create [flags]\nAll size quantities use Kubernetes notation, e.g. 4Gi. VM creation waits for a running VMI with a usable IP unless --no-wait is set.")
-	fs.StringVar(&op.IdempotencyKey, "idempotency-key", "", "required: stable key for repeating this request (1-128 printable non-space ASCII characters)")
+	fs.StringVar(&op.idempotencyKey, "idempotency-key", "", "required: stable key for repeating this request (1-128 printable non-space ASCII characters)")
 	ttl := fs.Int("ttl-seconds", 0, "resource lifetime, 1-86400 seconds (omitted: server default)")
-	var vm client.VMRequest
-	var volume client.VolumeRequest
 	var keys stringList
 	var userDataFile, waitTimeout string
 	var noWait bool
 	if kind == "vm" {
-		fs.StringVar(&vm.Image, "image", "", "required: approved namespace/name image")
-		fs.StringVar(&vm.Network, "network", "", "required: approved namespace/name network")
-		fs.IntVar(&vm.CPU, "cpu", 0, "required: positive CPU count")
-		fs.StringVar(&vm.Memory, "memory", "", "required: memory quantity")
-		fs.StringVar(&vm.BootDiskSize, "boot-disk-size", "", "required: boot disk quantity")
+		fs.StringVar(&op.vmRequest.Image, "image", "", "required: approved namespace/name image")
+		fs.StringVar(&op.vmRequest.Network, "network", "", "required: approved namespace/name network")
+		fs.IntVar(&op.vmRequest.CPU, "cpu", 0, "required: positive CPU count")
+		fs.StringVar(&op.vmRequest.Memory, "memory", "", "required: memory quantity")
+		fs.StringVar(&op.vmRequest.BootDiskSize, "boot-disk-size", "", "required: boot disk quantity")
 		fs.Var(&keys, "ssh-public-key-file", "SSH public key file; repeat for multiple keys (maximum 10)")
 		fs.StringVar(&userDataFile, "user-data-file", "", "cloud-config file (maximum 64 KiB)")
 		fs.StringVar(&waitTimeout, "wait-timeout", defaultWaitTimeout, "time to wait for VM readiness (GATEWAY_VM_WAIT_TIMEOUT)")
 		fs.BoolVar(&noWait, "no-wait", false, "return after VM creation without waiting for readiness")
 	} else {
-		fs.StringVar(&volume.Size, "size", "", "required: volume size quantity")
+		fs.StringVar(&op.volumeRequest.Size, "size", "", "required: volume size quantity")
 	}
 	if err := fs.Parse(args); err != nil {
 		return op, err
@@ -304,10 +335,10 @@ func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeou
 	if fs.NArg() != 0 {
 		return op, errors.New("create accepts flags only")
 	}
-	if len(op.IdempotencyKey) < 1 || len(op.IdempotencyKey) > 128 {
+	if len(op.idempotencyKey) < 1 || len(op.idempotencyKey) > 128 {
 		return op, errors.New("--idempotency-key requires 1-128 printable non-space ASCII characters")
 	}
-	for _, r := range op.IdempotencyKey {
+	for _, r := range op.idempotencyKey {
 		if r < 33 || r > 126 {
 			return op, errors.New("--idempotency-key requires printable non-space ASCII characters")
 		}
@@ -322,14 +353,13 @@ func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeou
 		if *ttl < 1 || *ttl > 86400 {
 			return op, errors.New("--ttl-seconds must be between 1 and 86400")
 		}
-		vm.TTLSeconds = ttl
-		volume.TTLSeconds = ttl
+		op.vmRequest.TTLSeconds = ttl
+		op.volumeRequest.TTLSeconds = ttl
 	}
 	if kind == "volume" {
-		if !positiveQuantity(volume.Size) {
+		if !positiveQuantity(op.volumeRequest.Size) {
 			return op, errors.New("--size requires a positive Kubernetes quantity")
 		}
-		op.Body = volume
 		return op, nil
 	}
 	duration, err := time.ParseDuration(waitTimeout)
@@ -338,16 +368,16 @@ func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeou
 	}
 	op.waitForVM = !noWait
 	op.waitTimeout = duration
-	for _, item := range []struct{ name, value string }{{"image", vm.Image}, {"network", vm.Network}} {
+	for _, item := range []struct{ name, value string }{{"image", op.vmRequest.Image}, {"network", op.vmRequest.Network}} {
 		parts := strings.Split(item.value, "/")
 		if len(parts) != 2 || !resourceID.MatchString(parts[0]) || !resourceID.MatchString(parts[1]) {
 			return op, fmt.Errorf("--%s requires namespace/name", item.name)
 		}
 	}
-	if vm.CPU < 1 {
+	if op.vmRequest.CPU < 1 {
 		return op, errors.New("--cpu must be positive")
 	}
-	if !positiveQuantity(vm.Memory) || !positiveQuantity(vm.BootDiskSize) {
+	if !positiveQuantity(op.vmRequest.Memory) || !positiveQuantity(op.vmRequest.BootDiskSize) {
 		return op, errors.New("--memory and --boot-disk-size require positive Kubernetes quantities")
 	}
 	if len(keys) > 10 {
@@ -366,7 +396,7 @@ func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeou
 		if _, err := base64.StdEncoding.DecodeString(fields[1]); err != nil {
 			return op, errors.New("invalid SSH public key encoding")
 		}
-		vm.SSHPublicKeys = append(vm.SSHPublicKeys, key)
+		op.vmRequest.SSHPublicKeys = append(op.vmRequest.SSHPublicKeys, key)
 	}
 	if userDataFile != "" {
 		data, err := readFile(userDataFile, 64*1024)
@@ -376,68 +406,9 @@ func parseCreate(kind string, args []string, output io.Writer, defaultWaitTimeou
 		if !strings.HasPrefix(string(data), "#cloud-config") {
 			return op, errors.New("user data must start with #cloud-config")
 		}
-		vm.UserData = string(data)
+		op.vmRequest.UserData = string(data)
 	}
-	op.Body = vm
 	return op, nil
-}
-
-func waitForVMReady(parent context.Context, api *client.Client, initial []byte, timeout, interval time.Duration) ([]byte, error) {
-	status, err := decodeVMStatus(initial)
-	if err != nil {
-		return nil, err
-	}
-	if status.Ready {
-		return initial, nil
-	}
-	waitCtx, cancel := context.WithTimeout(parent, timeout)
-	id := status.ID
-	defer cancel()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-waitCtx.Done():
-			return nil, vmWaitError(status, timeout, waitCtx.Err())
-		case <-ticker.C:
-			data, requestErr := api.Do(waitCtx, client.Request{
-				Method: "GET", Path: []string{"v1", "vms", id}, Auth: true, Statuses: []int{200},
-			})
-			if requestErr != nil {
-				if waitCtx.Err() != nil {
-					return nil, vmWaitError(status, timeout, waitCtx.Err())
-				}
-				return nil, fmt.Errorf("wait for VM %s readiness (last phase=%s, IP addresses=%v): %w", status.ID, status.Phase, status.IPAddresses, requestErr)
-			}
-			status, err = decodeVMStatus(data)
-			if err != nil {
-				return nil, err
-			}
-			if status.ID != id {
-				return nil, errors.New("gateway returned VM status for a different resource")
-			}
-			if status.Ready {
-				return data, nil
-			}
-		}
-	}
-}
-
-func decodeVMStatus(data []byte) (client.VMStatus, error) {
-	var status client.VMStatus
-	if err := json.Unmarshal(data, &status); err != nil || !resourceID.MatchString(status.ID) {
-		return client.VMStatus{}, errors.New("gateway returned an invalid VM status")
-	}
-	return status, nil
-}
-
-func vmWaitError(status client.VMStatus, timeout time.Duration, err error) error {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("VM %s did not become ready within %s (last phase=%s, IP addresses=%v); VM remains allocated: %w",
-			status.ID, timeout, status.Phase, status.IPAddresses, err)
-	}
-	return fmt.Errorf("waiting for VM %s readiness was canceled (last phase=%s, IP addresses=%v); VM remains allocated: %w",
-		status.ID, status.Phase, status.IPAddresses, err)
 }
 
 func readFile(path string, limit int64) ([]byte, error) {
