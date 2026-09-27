@@ -22,7 +22,7 @@ import (
 
 const (
 	defaultConcurrency  = 3
-	defaultPollInterval = 5 * time.Second
+	defaultPollInterval = 10 * time.Second
 	defaultWaitTimeout  = 10 * time.Minute
 	cleanupTimeout      = 2 * time.Minute
 )

@@ -263,6 +263,7 @@ and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
 before production use. The [smoke script](scripts/smoke.sh) launches the Go smoke
 runner, which defaults to three concurrent workers. Every worker creates a VM
 and independent volume, exercises hotplug, power, and reboot, and cleans up both.
+The runner polls VM and volume status every ten seconds by default.
 The runner checks that enough VM and volume quota is available before creating
 anything. Build it with `make build`; set `GATEWAY_SMOKE_BINARY` to select a
 binary outside `bin/`. The selected policy must have at least three available
