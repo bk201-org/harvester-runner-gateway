@@ -444,11 +444,20 @@ func (s *Server) detachVolume(w http.ResponseWriter, r *http.Request, owner auth
 }
 
 func validateVMRequest(req *VMRequest, p config.RepositoryPolicy) error {
-	if !contains(p.Images, req.Image) || !contains(p.Networks, req.Network) {
-		return fmt.Errorf("image or network is not allowed")
+	if !contains(p.Images, req.Image) {
+		return fmt.Errorf("image %q is not allowed", req.Image)
 	}
-	if req.CPU < 1 || req.CPU > p.MaxCPU || !validQuantity(req.Memory, p.MaxMemory) || !validQuantity(req.BootDiskSize, p.MaxBootDiskSize) {
-		return fmt.Errorf("CPU, memory, or boot disk size exceeds configured limits")
+	if !contains(p.Networks, req.Network) {
+		return fmt.Errorf("network %q is not allowed", req.Network)
+	}
+	if req.CPU < 1 || req.CPU > p.MaxCPU {
+		return fmt.Errorf("cpu %d must be between 1 and %d", req.CPU, p.MaxCPU)
+	}
+	if !validQuantity(req.Memory, p.MaxMemory) {
+		return fmt.Errorf("memory %q must be a positive quantity <= %s", req.Memory, p.MaxMemory)
+	}
+	if !validQuantity(req.BootDiskSize, p.MaxBootDiskSize) {
+		return fmt.Errorf("bootDiskSize %q must be a positive quantity <= %s", req.BootDiskSize, p.MaxBootDiskSize)
 	}
 	if len(req.UserData) > 64*1024 || (req.UserData != "" && !strings.HasPrefix(req.UserData, "#cloud-config")) {
 		return fmt.Errorf("userData must be cloud-config of at most 64 KiB")
