@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,9 @@ type fakeGateway struct {
 	attachFailed bool
 	nextVM       int
 	nextVolume   int
+	maxLiveVMs   int
+	vmCreated    chan struct{}
+	vmRelease    <-chan struct{}
 	power        map[string]string
 	volumes      map[string]bool
 	attached     map[string]string
@@ -57,7 +61,12 @@ func (f *fakeGateway) handler(w http.ResponseWriter, r *http.Request) {
 		f.nextVM++
 		id := fmt.Sprintf("vm%d", f.nextVM)
 		f.power[id] = "on"
+		f.maxLiveVMs = max(f.maxLiveVMs, len(f.power))
 		f.mu.Unlock()
+		if f.vmCreated != nil {
+			f.vmCreated <- struct{}{}
+			<-f.vmRelease
+		}
 		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, client.VMStatus{ID: id, Phase: "Running", PowerState: "on", Ready: true, IPAddresses: []string{"10.0.0.10"}})
 		return
@@ -251,6 +260,93 @@ func TestFocusedLifecycleCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCasesRunTwoAtOnceWithinQuota(t *testing.T) {
+	if flag.Lookup("test.parallel").Value.String() == "1" {
+		t.Skip("requires at least two Go test parallel slots")
+	}
+	fake := newFakeGateway()
+	fake.maxVMs = 3
+	fake.vmCreated = make(chan struct{}, len(smokeTestCases))
+	release := make(chan struct{})
+	fake.vmRelease = release
+	server := httptest.NewTLSServer(http.HandlerFunc(fake.handler))
+	defer server.Close()
+
+	startedTogether := make(chan bool, 1)
+	go func() {
+		defer close(release)
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for range 2 {
+			select {
+			case <-fake.vmCreated:
+			case <-timer.C:
+				startedTogether <- false
+				return
+			}
+		}
+		startedTogether <- true
+	}()
+
+	t.Run("cases", func(t *testing.T) {
+		if err := run(t, smokeClient(t, server), testConfig(), discardLogger()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !<-startedTogether {
+		t.Fatal("two cases did not create VMs concurrently")
+	}
+	fake.mu.Lock()
+	peak := fake.maxLiveVMs
+	fake.mu.Unlock()
+	if peak != 2 {
+		t.Fatalf("peak live VMs = %d, want 2", peak)
+	}
+	assertNoResources(t, fake)
+}
+
+func TestCasesUseOneSlotWhenVMQuotaOne(t *testing.T) {
+	fake := newFakeGateway()
+	fake.vmCreated = make(chan struct{}, len(smokeTestCases))
+	release := make(chan struct{})
+	fake.vmRelease = release
+	server := httptest.NewTLSServer(http.HandlerFunc(fake.handler))
+	defer server.Close()
+
+	stayedWithinQuota := make(chan bool, 1)
+	go func() {
+		defer close(release)
+		select {
+		case <-fake.vmCreated:
+		case <-time.After(500 * time.Millisecond):
+			stayedWithinQuota <- false
+			return
+		}
+		select {
+		case <-fake.vmCreated:
+			stayedWithinQuota <- false
+		case <-time.After(100 * time.Millisecond):
+			stayedWithinQuota <- true
+		}
+	}()
+
+	t.Run("cases", func(t *testing.T) {
+		if err := run(t, smokeClient(t, server), testConfig(), discardLogger()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !<-stayedWithinQuota {
+		t.Fatal("another case started while the only VM slot was occupied")
+	}
+	fake.mu.Lock()
+	peak := fake.maxLiveVMs
+	fake.mu.Unlock()
+	if peak != 1 {
+		t.Fatalf("peak live VMs = %d, want 1", peak)
+	}
+	assertNoResources(t, fake)
 }
 
 func TestQuotaFailureCreatesNothing(t *testing.T) {

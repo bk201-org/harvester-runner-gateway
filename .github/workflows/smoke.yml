@@ -24,4 +24,4 @@ jobs:
       - name: Build gateway and client
         run: make build
       - name: Exercise focused VM and volume lifecycles
-        run: go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -v
+        run: go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -parallel=2 -v

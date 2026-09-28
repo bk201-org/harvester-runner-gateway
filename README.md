@@ -285,13 +285,14 @@ guest service is ready.
 Unit tests and builds run without a cluster. Live creation, actions, hotplug,
 and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
 before production use. The [smoke test](internal/smoke/live_test.go)
-runs through Go's standard `testing` package as four sequential, named
-subtests: VM lifecycle, volume hotplug, VM power and reboot, and VM deletion
-with an attached volume. Each subtest owns one VM and cleans up independently.
-The test polls VM and volume status every ten seconds by default and checks that
-at least one VM and volume slot are available before running.
+runs through Go's standard `testing` package as four named subtests: VM
+lifecycle, volume hotplug, VM power and reboot, and VM deletion with an attached
+volume. Up to two subtests run at once, subject to available VM and volume
+quota. Each subtest owns one VM and cleans up independently. The test polls VM
+and volume status every ten seconds by default and checks that at least one VM
+and volume slot are available before running.
 No smoke executable is built. Run it with `./scripts/smoke.sh` or directly with
-`GATEWAY_SMOKE=1 go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -v`.
+`GATEWAY_SMOKE=1 go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -parallel=2 -v`.
 The selected policy must have at least one available VM and volume slot.
 
 ### GitHub Actions
@@ -371,8 +372,9 @@ its token file to rotate the credential. Then run:
 
 Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another local
 configuration. The Go test validates configuration and quota before running four
-focused subtests sequentially. Each subtest owns one VM and cleans up
-independently. The test is skipped during normal `go test ./...` runs; running
-the script or setting `GATEWAY_SMOKE=1` is the explicit opt-in. The gateway has
+focused subtests with up to two running at once when quota allows. Each
+subtest owns one VM and cleans up independently. The test is skipped during
+normal `go test ./...` runs; running the script or setting `GATEWAY_SMOKE=1` is
+the explicit opt-in. The gateway has
 no deployment manifest because
 TLS, network reachability, image/network names, and RBAC are site-specific.

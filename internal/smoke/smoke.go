@@ -23,6 +23,7 @@ const (
 	defaultPollInterval = 10 * time.Second
 	defaultWaitTimeout  = 10 * time.Minute
 	cleanupTimeout      = 2 * time.Minute
+	maxConcurrentCases  = 2
 )
 
 type ConfigError struct{ Err error }
@@ -57,15 +58,16 @@ type testState struct {
 }
 
 type smokeTestCase struct {
-	name string
-	run  func(context.Context, *client.Client, config, *testState, *slog.Logger) error
+	name        string
+	needsVolume bool
+	run         func(context.Context, *client.Client, config, *testState, *slog.Logger) error
 }
 
 var smokeTestCases = []smokeTestCase{
 	{name: "VM lifecycle", run: runVMLifecycle},
-	{name: "Volume hotplug", run: runVolumeHotplug},
+	{name: "Volume hotplug", needsVolume: true, run: runVolumeHotplug},
 	{name: "VM power and reboot", run: runVMPowerAndReboot},
-	{name: "VM deletion cascades attached volume", run: runVMDeletionCascade},
+	{name: "VM deletion cascades attached volume", needsVolume: true, run: runVMDeletionCascade},
 }
 
 // Run loads smoke configuration, creates a client, and runs focused lifecycle subtests.
@@ -81,7 +83,8 @@ func Run(t *testing.T, getenv func(string) string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer api.Close()
+	// Parallel subtests can continue after run returns.
+	t.Cleanup(api.Close)
 	return run(t, api, cfg, logger)
 }
 
@@ -209,8 +212,17 @@ func run(t *testing.T, api *client.Client, cfg config, logger *slog.Logger) erro
 		return fmt.Errorf("insufficient quota for focused smoke tests: available VMs=%d, volumes=%d", availableVMs, availableVolumes)
 	}
 
+	vmSlots := make(chan struct{}, min(maxConcurrentCases, availableVMs))
+	volumeSlots := make(chan struct{}, min(maxConcurrentCases, availableVolumes))
 	for _, testCase := range smokeTestCases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if testCase.needsVolume {
+				volumeSlots <- struct{}{}
+				defer func() { <-volumeSlots }()
+			}
+			vmSlots <- struct{}{}
+			defer func() { <-vmSlots }()
 			runTestCase(t, api, cfg, logger, testCase)
 		})
 	}
