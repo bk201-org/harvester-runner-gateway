@@ -23,6 +23,22 @@ make build
 runs as a non-root user, so mounted files must be readable by that user. Run
 exactly one gateway instance in v1; allocation and quota checks are serialized
 in that process.
+To run the Docker image, keep the YAML configuration and credentials outside
+the repository. Use the paths in `config.example.yaml` and create a persistent
+data directory writable by the image's non-root user. Then run:
+
+```sh
+make docker-build
+./docker-run.sh /secure/path/config.yaml /secure/path/gateway-tls \
+  /secure/path/harvester /secure/path/gateway-data
+docker logs harvester-runner-gateway
+```
+
+The TLS directory contains `tls.crt` and `tls.key`; the Harvester directory
+contains `kubeconfig`. Run `./docker-run.sh --help` for image, container name,
+and host port overrides. The script mounts credentials read-only and keeps the
+SQLite directory writable and persistent.
+
 The gateway needs HTTPS access to GitHub's OIDC discovery and JWKS endpoints and
 Kubernetes API access to Harvester. Runners need HTTPS access to the gateway.
 
