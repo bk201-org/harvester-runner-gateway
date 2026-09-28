@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -172,26 +173,36 @@ func TestVerifyGitHubOIDCClaims(t *testing.T) {
 		t.Fatalf("valid token rejected: owner=%+v err=%v", owner, err)
 	}
 	for _, test := range []struct {
-		name  string
-		claim string
-		value any
+		name, claim, reason string
+		value               any
 	}{
-		{"wrong audience", "aud", "other"},
-		{"wrong repository", "repository_id", "999"},
-		{"hosted runner", "runner_environment", "github-hosted"},
-		{"wrong workflow", "workflow_ref", "org/repo/.github/workflows/other.yml@refs/heads/main"},
-		{"wrong event", "event_name", "pull_request"},
-		{"expired", "exp", time.Now().Add(-time.Minute).Unix()},
+		{"wrong issuer", "iss", "issuer_mismatch", "https://other.example"},
+		{"wrong audience", "aud", "audience_mismatch", "other"},
+		{"missing time claim", "nbf", "missing_time_claim", nil},
+		{"wrong repository", "repository_id", "repository_not_allowed", "999"},
+		{"hosted runner", "runner_environment", "runner_not_self_hosted", "github-hosted"},
+		{"wrong workflow", "workflow_ref", "workflow_not_allowed", "org/repo/.github/workflows/other.yml@refs/heads/main"},
+		{"wrong event", "event_name", "event_not_allowed", "pull_request"},
+		{"invalid run ID", "run_id", "invalid_run_identity", "invalid"},
+		{"expired", "exp", "invalid_token", time.Now().Add(-time.Minute).Unix()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			changed := jwt.MapClaims{}
 			for key, value := range claims {
 				changed[key] = value
 			}
-			changed[test.claim] = test.value
-			if _, _, err := verifier.Verify(context.Background(), sign(changed), cfg); err == nil {
-				t.Fatal("expected token rejection")
+			if test.value == nil {
+				delete(changed, test.claim)
+			} else {
+				changed[test.claim] = test.value
+			}
+			_, _, err := verifier.Verify(context.Background(), sign(changed), cfg)
+			if !errors.Is(err, ErrUnauthorized) || RejectionReason(err) != test.reason {
+				t.Fatalf("rejection = %v, reason = %q; want %q", err, RejectionReason(err), test.reason)
 			}
 		})
+	}
+	if _, _, err := verifier.Verify(context.Background(), "not-a-jwt", cfg); !errors.Is(err, ErrUnauthorized) || RejectionReason(err) != "invalid_token" {
+		t.Fatalf("malformed token rejection = %v, reason = %q", err, RejectionReason(err))
 	}
 }

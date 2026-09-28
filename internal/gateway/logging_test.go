@@ -86,3 +86,37 @@ func TestResourceLogContainsOwnershipWithoutCredentials(t *testing.T) {
 		t.Fatalf("unexpected resource log: %#v", resource)
 	}
 }
+
+func TestAuthenticationRejectionLogsReasonWithoutCredentials(t *testing.T) {
+	for _, test := range []struct {
+		name, header, reason, response string
+	}{
+		{"missing bearer", "", "bearer_required", "Bearer token required"},
+		{"rejected bearer", "Bearer header-secret", "verification_failed", "Bearer token rejected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := testServer(1, 1)
+			var output bytes.Buffer
+			s.logger = slog.New(slog.NewJSONHandler(&output, nil))
+			request := httptest.NewRequest(http.MethodGet, "/v1/quota", nil)
+			if test.header != "" {
+				request.Header.Set("Authorization", test.header)
+			}
+			response := httptest.NewRecorder()
+			s.Handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), test.response) {
+				t.Fatalf("response = %d %q", response.Code, response.Body.String())
+			}
+			if strings.Contains(output.String(), "header-secret") {
+				t.Fatalf("log contains credential: %s", output.String())
+			}
+			records := decodeLogs(t, output.Bytes())
+			if len(records) != 2 || records[0]["msg"] != "authentication rejected" ||
+				records[0]["reason"] != test.reason || records[1]["msg"] != "request completed" ||
+				records[1]["status"] != float64(http.StatusUnauthorized) {
+				t.Fatalf("unexpected request logs: %#v", records)
+			}
+		})
+	}
+}

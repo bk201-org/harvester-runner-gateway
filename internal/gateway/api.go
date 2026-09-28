@@ -194,11 +194,13 @@ func (s *Server) authorize(next action) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
+			s.logger.WarnContext(r.Context(), "authentication rejected", "reason", "bearer_required")
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer token required")
 			return
 		}
 		owner, policy, err := s.verifier.Verify(r.Context(), strings.TrimPrefix(header, "Bearer "), s.cfg)
 		if err != nil {
+			s.logger.WarnContext(r.Context(), "authentication rejected", "reason", auth.RejectionReason(err))
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer token rejected")
 			return
 		}

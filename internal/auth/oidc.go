@@ -23,6 +23,22 @@ import (
 
 var ErrUnauthorized = errors.New("unauthorized")
 
+type rejectionError struct{ reason string }
+
+func (e rejectionError) Error() string { return ErrUnauthorized.Error() }
+func (e rejectionError) Unwrap() error { return ErrUnauthorized }
+
+// RejectionReason returns a fixed diagnostic code without exposing token contents.
+func RejectionReason(err error) string {
+	var rejected rejectionError
+	if errors.As(err, &rejected) {
+		return rejected.reason
+	}
+	return "verification_failed"
+}
+
+func reject(reason string) error { return rejectionError{reason: reason} }
+
 type Owner struct {
 	RepositoryID string
 	RunID        string
@@ -54,7 +70,7 @@ func NewVerifier(issuer, audience string) *Verifier {
 
 func (v *Verifier) Verify(ctx context.Context, raw string, cfg config.Config) (Owner, config.RepositoryPolicy, error) {
 	if len(raw) == 0 || len(raw) > 16*1024 {
-		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
+		return Owner{}, config.RepositoryPolicy{}, reject("invalid_token")
 	}
 	claims := jwt.MapClaims{}
 	parsed, err := (&jwt.Parser{ValidMethods: []string{jwt.SigningMethodRS256.Alg()}}).ParseWithClaims(raw, claims, func(token *jwt.Token) (any, error) {
@@ -64,22 +80,35 @@ func (v *Verifier) Verify(ctx context.Context, raw string, cfg config.Config) (O
 		}
 		return v.key(ctx, kid)
 	})
-	if err != nil || !parsed.Valid || !claims.VerifyIssuer(v.issuer, true) || !claims.VerifyAudience(v.audience, true) {
-		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
+	if err != nil || !parsed.Valid {
+		return Owner{}, config.RepositoryPolicy{}, reject("invalid_token")
+	}
+	if !claims.VerifyIssuer(v.issuer, true) {
+		return Owner{}, config.RepositoryPolicy{}, reject("issuer_mismatch")
+	}
+	if !claims.VerifyAudience(v.audience, true) {
+		return Owner{}, config.RepositoryPolicy{}, reject("audience_mismatch")
 	}
 	if !presentNumeric(claims["exp"]) || !presentNumeric(claims["iat"]) || !presentNumeric(claims["nbf"]) {
-		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
+		return Owner{}, config.RepositoryPolicy{}, reject("missing_time_claim")
 	}
 	repoID := claimString(claims["repository_id"])
 	policy, ok := cfg.Repository(repoID)
-	if !ok || claimString(claims["runner_environment"]) != "self-hosted" ||
-		!contains(policy.AllowedWorkflowRefs, claimString(claims["workflow_ref"])) ||
-		!contains(policy.AllowedEvents, claimString(claims["event_name"])) {
-		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
+	if !ok {
+		return Owner{}, config.RepositoryPolicy{}, reject("repository_not_allowed")
+	}
+	if claimString(claims["runner_environment"]) != "self-hosted" {
+		return Owner{}, config.RepositoryPolicy{}, reject("runner_not_self_hosted")
+	}
+	if !contains(policy.AllowedWorkflowRefs, claimString(claims["workflow_ref"])) {
+		return Owner{}, config.RepositoryPolicy{}, reject("workflow_not_allowed")
+	}
+	if !contains(policy.AllowedEvents, claimString(claims["event_name"])) {
+		return Owner{}, config.RepositoryPolicy{}, reject("event_not_allowed")
 	}
 	owner := Owner{RepositoryID: repoID, RunID: claimString(claims["run_id"]), RunAttempt: claimString(claims["run_attempt"]), WorkflowRef: claimString(claims["workflow_ref"])}
 	if !decimal(owner.RepositoryID) || !decimal(owner.RunID) || !decimal(owner.RunAttempt) {
-		return Owner{}, config.RepositoryPolicy{}, ErrUnauthorized
+		return Owner{}, config.RepositoryPolicy{}, reject("invalid_run_identity")
 	}
 	return owner, policy, nil
 }
