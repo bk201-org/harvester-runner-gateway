@@ -2,6 +2,27 @@ name: Gateway smoke test
 
 on:
   workflow_dispatch:
+    inputs:
+      gateway_url:
+        description: Gateway URL (defaults to the GATEWAY_URL repository variable)
+        required: false
+        type: string
+      gateway_image:
+        description: VM image (defaults to the GATEWAY_IMAGE repository variable)
+        required: false
+        type: string
+      gateway_network:
+        description: VM network (defaults to the GATEWAY_NETWORK repository variable)
+        required: false
+        type: string
+      gateway_audience:
+        description: OIDC audience (defaults to the GATEWAY_AUDIENCE repository variable)
+        required: false
+        type: string
+      gateway_ca_cert:
+        description: CA certificate path on the runner (defaults to the GATEWAY_CA_CERT repository variable)
+        required: false
+        type: string
 
 jobs:
   smoke:
@@ -11,11 +32,11 @@ jobs:
       id-token: write
     env:
       GATEWAY_SMOKE: "1"
-      GATEWAY_URL: ${{ vars.GATEWAY_URL }}
-      GATEWAY_IMAGE: ${{ vars.GATEWAY_IMAGE }}
-      GATEWAY_NETWORK: ${{ vars.GATEWAY_NETWORK }}
-      GATEWAY_AUDIENCE: ${{ vars.GATEWAY_AUDIENCE }}
-      GATEWAY_CA_CERT: ${{ vars.GATEWAY_CA_CERT }}
+      GATEWAY_URL: ${{ inputs.gateway_url || vars.GATEWAY_URL }}
+      GATEWAY_IMAGE: ${{ inputs.gateway_image || vars.GATEWAY_IMAGE }}
+      GATEWAY_NETWORK: ${{ inputs.gateway_network || vars.GATEWAY_NETWORK }}
+      GATEWAY_AUDIENCE: ${{ inputs.gateway_audience || vars.GATEWAY_AUDIENCE }}
+      GATEWAY_CA_CERT: ${{ inputs.gateway_ca_cert || vars.GATEWAY_CA_CERT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
