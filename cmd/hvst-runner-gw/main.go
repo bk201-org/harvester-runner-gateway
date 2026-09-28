@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
-	"github.com/bk201-org/harvester-runner-gateway/internal/config"
-	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
-	"github.com/bk201-org/harvester-runner-gateway/internal/harvester"
+	"github.com/bk201/harvester-runner-gateway/internal/auth"
+	"github.com/bk201/harvester-runner-gateway/internal/config"
+	"github.com/bk201/harvester-runner-gateway/internal/gateway"
+	"github.com/bk201/harvester-runner-gateway/internal/harvester"
 )
 
 func main() {

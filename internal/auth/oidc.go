@@ -18,7 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 
-	"github.com/bk201-org/harvester-runner-gateway/internal/config"
+	"github.com/bk201/harvester-runner-gateway/internal/config"
 )
 
 var ErrUnauthorized = errors.New("unauthorized")

@@ -13,9 +13,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
-	"github.com/bk201-org/harvester-runner-gateway/internal/config"
-	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
+	"github.com/bk201/harvester-runner-gateway/internal/auth"
+	"github.com/bk201/harvester-runner-gateway/internal/config"
+	"github.com/bk201/harvester-runner-gateway/internal/gateway"
 )
 
 func (b *Backend) getOwnedVolume(ctx context.Context, policy config.RepositoryPolicy, owner auth.Owner, id string) (*corev1.PersistentVolumeClaim, error) {

@@ -86,7 +86,7 @@ per-call JSON logs to stderr.
 supports every gateway API operation without
 needing `curl` or a Harvester kubeconfig. It can also be installed directly from
 this checkout with `go install ./cmd/hvst-runner-gw-client`. Go programs can
-import `github.com/bk201-org/harvester-runner-gateway/client` for typed VM,
+import `github.com/bk201/harvester-runner-gateway/client` for typed VM,
 volume, quota, health, readiness, and lifecycle operations.
 
 For local use, configure the gateway's optional `localSmoke` credential as

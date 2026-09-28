@@ -22,9 +22,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
-	"github.com/bk201-org/harvester-runner-gateway/internal/config"
-	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
+	"github.com/bk201/harvester-runner-gateway/internal/auth"
+	"github.com/bk201/harvester-runner-gateway/internal/config"
+	"github.com/bk201/harvester-runner-gateway/internal/gateway"
 )
 
 const (

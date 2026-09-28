@@ -15,8 +15,8 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
-	"github.com/bk201-org/harvester-runner-gateway/internal/config"
+	"github.com/bk201/harvester-runner-gateway/internal/auth"
+	"github.com/bk201/harvester-runner-gateway/internal/config"
 )
 
 func TestFailedVMDeletionKeepsRootAndCloudInit(t *testing.T) {
