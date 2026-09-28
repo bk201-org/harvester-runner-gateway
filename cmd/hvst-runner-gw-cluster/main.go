@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/bk201/harvester-runner-gateway/internal/clusteraction"
+	"github.com/bk201-org/harvester-runner-gateway/internal/clusteraction"
 )
 
 func main() {

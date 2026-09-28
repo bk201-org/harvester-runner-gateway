@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
-	"github.com/bk201/harvester-runner-gateway/internal/config"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
 type responseLogger struct {

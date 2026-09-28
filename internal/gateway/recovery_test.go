@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
 )
 
 func TestRecoveredHighWaterMark(t *testing.T) {

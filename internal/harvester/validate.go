@@ -8,8 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/bk201/harvester-runner-gateway/internal/config"
-	"github.com/bk201/harvester-runner-gateway/internal/gateway"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
+	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
 
 // ValidateVM performs cluster-backed validation before the gateway reserves a

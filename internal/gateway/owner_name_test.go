@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
-	"github.com/bk201/harvester-runner-gateway/internal/config"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
 func TestAllocatorRejectsInvalidOwnerComponents(t *testing.T) {

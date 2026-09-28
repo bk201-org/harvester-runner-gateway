@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bk201/harvester-runner-gateway/client"
+	"github.com/bk201-org/harvester-runner-gateway/client"
 )
 
 const (

@@ -3,7 +3,7 @@ package harvester
 import (
 	"fmt"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
 )
 
 func testResourceID(_ auth.Owner, sequence int, kind ...string) string {

@@ -14,8 +14,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
-	"github.com/bk201/harvester-runner-gateway/internal/config"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
 )
 
 var (

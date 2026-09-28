@@ -17,9 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
-	"github.com/bk201/harvester-runner-gateway/internal/config"
-	"github.com/bk201/harvester-runner-gateway/internal/gateway"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/config"
+	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
 
 const primaryInterfaceName = "nic-1"

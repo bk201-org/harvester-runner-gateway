@@ -1,4 +1,4 @@
-module github.com/bk201/harvester-runner-gateway
+module github.com/bk201-org/harvester-runner-gateway
 
 go 1.26.0
 

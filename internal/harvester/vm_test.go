@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic/fake"
 
-	"github.com/bk201/harvester-runner-gateway/internal/auth"
-	"github.com/bk201/harvester-runner-gateway/internal/gateway"
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
+	"github.com/bk201-org/harvester-runner-gateway/internal/gateway"
 )
 
 func TestRenderCloudConfigMergesSSHKeys(t *testing.T) {
