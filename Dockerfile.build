@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.26.8-bookworm AS source
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY client/ ./client/
+COPY config.example.yaml ./
+
+FROM source AS binary-build
+ARG BINARY=hvst-runner-gw
+ARG CLIENT_BINARY=hvst-runner-gw-client
+RUN mkdir -p /out \
+    && CGO_ENABLED=0 go build -trimpath -o "/out/${BINARY}" ./cmd/hvst-runner-gw \
+    && CGO_ENABLED=0 go build -trimpath -o "/out/${CLIENT_BINARY}" ./cmd/hvst-runner-gw-client
+
+FROM scratch AS binaries
+COPY --from=binary-build /out/ /
+
+FROM source AS release-build
+RUN mkdir -p /release \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /release/hvst-runner-gw-cluster-linux-amd64 ./cmd/hvst-runner-gw-cluster \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /release/hvst-runner-gw-cluster-linux-arm64 ./cmd/hvst-runner-gw-cluster \
+    && cd /release \
+    && sha256sum hvst-runner-gw-cluster-linux-amd64 hvst-runner-gw-cluster-linux-arm64 > SHA256SUMS
+
+FROM scratch AS cluster-release
+COPY --from=release-build /release/ /
+
+FROM source AS test
+ARG RUN_ID
+RUN : "$RUN_ID" && go test ./...
+
+FROM source AS vet
+ARG RUN_ID
+RUN : "$RUN_ID" && go vet ./...
+
+FROM source AS test-cluster-action
+COPY actions/create-ci-cluster/ ./actions/create-ci-cluster/
+COPY scripts/cluster-smoke.sh ./scripts/cluster-smoke.sh
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+ARG RUN_ID
+RUN : "$RUN_ID" \
+    && go test ./internal/clusteraction -count=1 \
+    && node --test actions/create-ci-cluster/launcher.test.js \
+    && bash -n scripts/cluster-smoke.sh

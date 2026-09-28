@@ -19,9 +19,14 @@ make build
 ./bin/hvst-runner-gw --config /secure/path/config.yaml
 ```
 
-`make test`, `make vet`, and `make docker-build` are also available. The image
-defaults to a non-root user. Run exactly one gateway instance in v1; allocation
-and quota checks are serialized in that process.
+Docker is required for the build, release, test, vet, and image targets.
+`make build` builds Linux server and client executables in `Dockerfile.build`
+and exports them to `./bin`.
+`make cluster-release` exports release binaries and checksums to `./dist`.
+`make test`, `make test-cluster-action`, and `make vet` run in containers too.
+`make docker-build` builds the runtime image. The image defaults to a non-root
+user. Run exactly one gateway instance in v1; allocation and quota checks are
+serialized in that process.
 
 To run the Docker image, keep the YAML configuration and credentials outside
 the repository. Use the paths in `config.example.yaml` and create a persistent

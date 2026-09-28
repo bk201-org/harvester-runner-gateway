@@ -1,0 +1,16 @@
+**
+!go.mod
+!go.sum
+!config.example.yaml
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!client/
+!client/**
+!actions/
+!actions/create-ci-cluster/
+!actions/create-ci-cluster/launcher.js
+!actions/create-ci-cluster/launcher.test.js
+!scripts/
+!scripts/cluster-smoke.sh
