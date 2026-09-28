@@ -263,7 +263,7 @@ func (b *Backend) recoverCloudInitSecret(ctx context.Context, policy config.Repo
 
 func buildVM(namespace, id string, req gateway.VMRequest, storageClass string, labels, values map[string]string) (*unstructured.Unstructured, error) {
 	rootName := id + "-root"
-	rootAnnotations := map[string]string{imageKey: req.Image, autoDelete: "true", expiresKey: values[expiresKey]}
+	rootAnnotations := map[string]string{imageKey: req.Image, expiresKey: values[expiresKey]}
 	if workflowRef := values[workflowRefKey]; workflowRef != "" {
 		rootAnnotations[workflowRefKey] = workflowRef
 	}

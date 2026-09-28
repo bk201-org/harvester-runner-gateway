@@ -37,7 +37,6 @@ const (
 	expiresKey      = "runner-gw-expires-at"
 	workflowRefKey  = "runner-gw-workflow-ref"
 	imageKey        = "harvesterhci.io/imageId"
-	autoDelete      = "terraform-provider-harvester-auto-delete"
 	claimKey        = "harvesterhci.io/volumeClaimTemplates"
 	removedKey      = "harvesterhci.io/removedPersistentVolumeClaims"
 	requestTimeout  = 20 * time.Second
