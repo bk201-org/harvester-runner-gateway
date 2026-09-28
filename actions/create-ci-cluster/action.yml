@@ -1,0 +1,62 @@
+name: Create CI VM cluster
+description: Create identical Harvester VMs and delete them after the job
+inputs:
+  gateway-url:
+    description: HTTPS URL of harvester-runner-gateway
+    required: true
+  vm-count:
+    description: Number of VMs to create
+    required: true
+  image:
+    description: Approved Harvester image namespace/name
+    required: true
+  network:
+    description: Approved Harvester network namespace/name
+    required: true
+  cpu:
+    description: CPU cores per VM
+    required: true
+  memory:
+    description: Memory per VM, such as 4Gi
+    required: true
+  boot-disk-size:
+    description: Boot disk size per VM, such as 20Gi
+    required: true
+  username:
+    description: Guest SSH username
+    required: true
+  binary-url:
+    description: HTTPS release URL for the cluster executable matching this runner architecture
+    required: true
+  binary-sha256:
+    description: SHA-256 of the released cluster executable
+    required: true
+  ttl-seconds:
+    description: Optional VM lifetime in seconds; gateway default is six hours
+    required: false
+  user-data:
+    description: Optional additional #cloud-config YAML
+    required: false
+  wait-timeout-seconds:
+    description: Shared timeout for all VMs to become ready
+    required: false
+    default: '600'
+  audience:
+    description: GitHub OIDC audience
+    required: false
+    default: api://harvester-runner-gateway
+  ca-cert-path:
+    description: Optional PEM certificate path for the gateway
+    required: false
+outputs:
+  vm-ids:
+    description: JSON array of created VM IDs
+  ssh-config-path:
+    description: Path to the generated SSH config
+  private-key-path:
+    description: Path to the generated SSH private key
+runs:
+  using: node24
+  main: main.js
+  post: post.js
+  post-if: always()

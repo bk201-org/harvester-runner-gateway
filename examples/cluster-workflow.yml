@@ -1,0 +1,36 @@
+name: CI VM cluster
+on: workflow_dispatch
+
+jobs:
+  cluster:
+    runs-on: [self-hosted, harvester-runners]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create VMs
+        id: cluster
+        uses: OWNER/REPO/actions/create-ci-cluster@VERSION
+        with:
+          gateway-url: https://gateway.example.internal:8443
+          vm-count: '2'
+          image: default/ubuntu-24-04
+          network: default/vm-network
+          cpu: '2'
+          memory: 4Gi
+          boot-disk-size: 20Gi
+          username: ubuntu
+          binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-cluster-linux-amd64
+          binary-sha256: REPLACE_WITH_SHA256_FROM_SHA256SUMS
+          user-data: |
+            #cloud-config
+            package_update: true
+      - name: Show cluster hosts
+        env:
+          VM_IDS: ${{ steps.cluster.outputs.vm-ids }}
+          SSH_CONFIG: ${{ steps.cluster.outputs.ssh-config-path }}
+        shell: bash
+        run: |
+          jq -r '.[]' <<< "$VM_IDS"
+          echo "SSH config: $SSH_CONFIG"

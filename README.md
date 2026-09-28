@@ -378,3 +378,11 @@ normal `go test ./...` runs; running the script or setting `GATEWAY_SMOKE=1` is
 the explicit opt-in. The gateway has
 no deployment manifest because
 TLS, network reachability, image/network names, and RBAC are site-specific.
+
+## CI VM cluster action
+
+The reusable [cluster action](actions/create-ci-cluster/README.md) creates identical
+VMs, writes a job-local SSH config, and deletes recorded VMs in its post-job
+step. Run `make cluster-release` to build Linux amd64 and arm64 executables
+and checksums for a GitHub release. The action downloads the matching binary
+from the release URL supplied by the caller.
