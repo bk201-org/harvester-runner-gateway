@@ -71,10 +71,16 @@ func Run(ctx context.Context, operation string, getenv func(string) string) erro
 }
 
 func newClient(opt options, getenv func(string) string) (*client.Client, error) {
-	return client.New(client.Config{URL: opt.URL, Audience: opt.Audience, CACert: opt.CACert,
-		Timeout: 30 * time.Second, GitHubActions: getenv("GITHUB_ACTIONS") == "true",
+	actions := getenv("GITHUB_ACTIONS") == "true"
+	cfg := client.Config{URL: opt.URL, Audience: opt.Audience, CACert: opt.CACert,
+		Timeout: 30 * time.Second, GitHubActions: actions,
 		OIDCRequestURL:   getenv("ACTIONS_ID_TOKEN_REQUEST_URL"),
-		OIDCRequestToken: getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")})
+		OIDCRequestToken: getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")}
+	if !actions {
+		cfg.TokenFile = getenv("GATEWAY_TOKEN_FILE")
+		cfg.Token = getenv("GATEWAY_TOKEN")
+	}
+	return client.New(cfg)
 }
 
 func readOptions(getenv func(string) string) (options, error) {

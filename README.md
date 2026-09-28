@@ -385,4 +385,7 @@ The reusable [cluster action](actions/create-ci-cluster/README.md) creates ident
 VMs, writes a job-local SSH config, and deletes recorded VMs in its post-job
 step. Run `make cluster-release` to build Linux amd64 and arm64 executables
 and checksums for a GitHub release. The action downloads the matching binary
-from the release URL supplied by the caller.
+from the release URL supplied by the caller. Run `make test-cluster-action`
+for an offline command smoke test. To exercise the command against the
+real gateway with the same smoke configuration as `./scripts/smoke.sh`, run
+`GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh`.

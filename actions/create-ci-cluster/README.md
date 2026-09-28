@@ -36,3 +36,31 @@ On a failed create or readiness timeout, the post-job step still attempts to
 delete every VM whose ID was returned and recorded. If the runner disappears or
 a create response is lost before its ID can be recorded, the gateway's TTL
 cleanup is the fallback.
+
+## Test locally without GitHub Actions
+
+Run `make test-cluster-action` from the repository root. This exercises the
+Go command against an in-process HTTPS gateway with a local token, plus the
+cluster and launcher tests. It requires Go, Node.js, and OpenSSH client tools,
+but does not contact your gateway or create VMs.
+
+To smoke test the command against your real gateway without a GitHub Actions
+job, reuse the [local smoke configuration](../../README.md#local-shell). For
+example, run this from the repository root with `kf/smoke.json`:
+
+```sh
+GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh
+```
+
+The script reads `gatewayURL`, `image`, `network`, `tokenFile`, and optional
+`caCert` from that file. Without `GATEWAY_SMOKE_CONFIG`, it uses
+`${XDG_CONFIG_HOME:-$HOME/.config}/harvester-runner-gateway/smoke.json`, the
+same location as `./scripts/smoke.sh`.
+
+The script builds and invokes `hvst-runner-gw-cluster create`, checks the
+returned VM IDs, key, and SSH config, then invokes `cleanup` on exit, including
+after a failed create. It creates one real VM by default. Set `GATEWAY_VM_COUNT`,
+`GATEWAY_USERNAME`, `GATEWAY_CPU`, `GATEWAY_MEMORY`, `GATEWAY_BOOT_DISK_SIZE`,
+`GATEWAY_TTL_SECONDS`, or `GATEWAY_USER_DATA_FILE` to override the defaults.
+Set `CLUSTER_SMOKE_BINARY` to test an existing executable instead of building
+from source. The script requires `jq` as well.

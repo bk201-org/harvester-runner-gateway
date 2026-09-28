@@ -4,7 +4,7 @@ OUTPUT_DIR ?= bin
 RELEASE_DIR ?= dist
 IMAGE ?= harvester-runner-gateway:dev
 
-.PHONY: build cluster-release test vet docker-build clean
+.PHONY: build cluster-release test test-cluster-action vet docker-build clean
 
 build:
 	mkdir -p $(OUTPUT_DIR)
@@ -19,6 +19,11 @@ cluster-release:
 
 test:
 	go test ./...
+
+test-cluster-action:
+	go test ./internal/clusteraction -count=1
+	node --test actions/create-ci-cluster/launcher.test.js
+	bash -n scripts/cluster-smoke.sh
 
 vet:
 	go vet ./...
