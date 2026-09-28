@@ -210,7 +210,6 @@ func run(t *testing.T, api *client.Client, cfg config, logger *slog.Logger) erro
 	}
 
 	for _, testCase := range smokeTestCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			runTestCase(t, api, cfg, logger, testCase)
 		})

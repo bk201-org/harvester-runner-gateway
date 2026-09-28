@@ -222,7 +222,6 @@ func assertNoResources(t *testing.T, fake *fakeGateway) {
 
 func TestFocusedLifecycleCases(t *testing.T) {
 	for _, testCase := range smokeTestCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			fake := newFakeGateway()
 			server := httptest.NewTLSServer(http.HandlerFunc(fake.handler))
