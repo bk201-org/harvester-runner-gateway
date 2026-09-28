@@ -291,7 +291,7 @@ volume. Up to two subtests run at once, subject to available VM and volume
 quota. Each subtest owns one VM and cleans up independently. The test polls VM
 and volume status every ten seconds by default and checks that at least one VM
 and volume slot are available before running.
-No smoke executable is built. Run it with `./scripts/smoke.sh` or directly with
+No smoke executable is built. Run it with `./scripts/gateway-smoke.sh` or directly with
 `GATEWAY_SMOKE=1 go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -parallel=2 -v`.
 The selected policy must have at least one available VM and volume slot.
 
@@ -367,7 +367,7 @@ put it in GitHub variables or artifacts. Restart the gateway after replacing
 its token file to rotate the credential. Then run:
 
 ```sh
-./scripts/smoke.sh
+./scripts/gateway-smoke.sh
 ```
 
 Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another local
@@ -387,5 +387,5 @@ step. Run `make cluster-release` to build Linux amd64 and arm64 executables
 and checksums for a GitHub release. The action downloads the matching binary
 from the release URL supplied by the caller. Run `make test-cluster-action`
 for an offline command smoke test. To exercise the command against the
-real gateway with the same smoke configuration as `./scripts/smoke.sh`, run
+real gateway with the same smoke configuration as `./scripts/gateway-smoke.sh`, run
 `GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh`.

@@ -55,7 +55,7 @@ GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh
 The script reads `gatewayURL`, `image`, `network`, `tokenFile`, and optional
 `caCert` from that file. Without `GATEWAY_SMOKE_CONFIG`, it uses
 `${XDG_CONFIG_HOME:-$HOME/.config}/harvester-runner-gateway/smoke.json`, the
-same location as `./scripts/smoke.sh`.
+same location as `./scripts/gateway-smoke.sh`.
 
 The script builds and invokes `hvst-runner-gw-cluster create`, checks the
 returned VM IDs, key, and SSH config, then invokes `cleanup` on exit, including
