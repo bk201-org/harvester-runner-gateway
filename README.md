@@ -444,3 +444,7 @@ from the release URL supplied by the caller. Run `make test-cluster-action`
 for an offline command smoke test. To exercise the command against the
 real gateway with the same smoke configuration as `./scripts/gateway-smoke.sh`, run
 `GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh`.
+
+The [k3s cluster action](actions/create-k3s-cluster/README.md) builds on the same
+command. It also installs k3s over SSH (first VM as server, the rest as agents)
+and saves a kubeconfig for the job.

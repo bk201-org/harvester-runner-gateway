@@ -1,0 +1,99 @@
+name: Test create CI k3s cluster action
+
+on:
+  workflow_dispatch:
+    inputs:
+      gateway_url:
+        description: Gateway URL (defaults to the GATEWAY_URL repository variable)
+        required: false
+        type: string
+      gateway_image:
+        description: VM image (defaults to the GATEWAY_IMAGE repository variable)
+        required: false
+        type: string
+      gateway_network:
+        description: VM network (defaults to the GATEWAY_NETWORK repository variable)
+        required: false
+        type: string
+      gateway_audience:
+        description: OIDC audience (defaults to the GATEWAY_AUDIENCE repository variable)
+        required: false
+        type: string
+      gateway_ca_cert:
+        description: CA certificate path on the runner (defaults to the GATEWAY_CA_CERT repository variable)
+        required: false
+        type: string
+      k3s_version:
+        description: k3s release such as v1.35.2+k3s1 (empty uses the stable channel)
+        required: false
+        type: string
+
+jobs:
+  test-action-create-k3s-cluster:
+    runs-on: [self-hosted, harvester-runners]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GATEWAY_URL: ${{ inputs.gateway_url || vars.GATEWAY_URL }}
+      GATEWAY_IMAGE: ${{ inputs.gateway_image || vars.GATEWAY_IMAGE }}
+      GATEWAY_NETWORK: ${{ inputs.gateway_network || vars.GATEWAY_NETWORK }}
+      GATEWAY_AUDIENCE: ${{ inputs.gateway_audience || vars.GATEWAY_AUDIENCE }}
+      GATEWAY_CA_CERT: ${{ inputs.gateway_ca_cert || vars.GATEWAY_CA_CERT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build cluster binary
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          make cluster-release
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64 | arm64) arch=arm64 ;;
+            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          binary="dist/hvst-runner-gw-cluster-linux-${arch}"
+          test -f "$binary"
+          chmod +x "$binary"
+          echo "path=$binary" >> "$GITHUB_OUTPUT"
+      - name: Create k3s cluster
+        id: cluster
+        uses: ./actions/create-k3s-cluster
+        with:
+          gateway-url: ${{ env.GATEWAY_URL }}
+          vm-count: '2'
+          image: ${{ env.GATEWAY_IMAGE }}
+          network: ${{ env.GATEWAY_NETWORK }}
+          cpu: '2'
+          memory: 4Gi
+          boot-disk-size: 20Gi
+          username: ubuntu
+          k3s-version: ${{ inputs.k3s_version }}
+          binary-path: ${{ steps.build.outputs.path }}
+          ttl-seconds: '3600'
+          audience: ${{ env.GATEWAY_AUDIENCE || 'api://harvester-runner-gateway' }}
+          ca-cert-path: ${{ env.GATEWAY_CA_CERT }}
+      - name: Verify cluster
+        env:
+          VM_IDS: ${{ steps.cluster.outputs.vm-ids }}
+          SERVER_VM_ID: ${{ steps.cluster.outputs.server-vm-id }}
+          SSH_CONFIG: ${{ steps.cluster.outputs.ssh-config-path }}
+          KUBECONFIG_PATH: ${{ steps.cluster.outputs.kubeconfig-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$KUBECONFIG_PATH"
+          test "$(stat -c %a "$KUBECONFIG_PATH")" = 600
+          expected="$(jq 'length' <<< "$VM_IDS")"
+          test "$expected" -eq 2
+          test "$SERVER_VM_ID" = "$(jq -r '.[0]' <<< "$VM_IDS")"
+          # Check through the server VM so the test does not need kubectl on the runner.
+          nodes="$(ssh -F "$SSH_CONFIG" -o BatchMode=yes "$SERVER_VM_ID" sudo -n k3s kubectl get nodes --no-headers)"
+          echo "$nodes"
+          ready="$(grep -c ' Ready' <<< "$nodes" || true)"
+          test "$ready" -eq "$expected"
+          if command -v kubectl >/dev/null 2>&1; then
+            kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide
+          fi

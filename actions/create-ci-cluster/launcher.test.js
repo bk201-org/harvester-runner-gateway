@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { loadBinary, post, verifiedBinary } = require('./launcher');
+const { loadBinary, main, post, verifiedBinary } = require('./launcher');
 
 test('loadBinary reads a local path, optionally verifying the checksum', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-path-'));
@@ -54,6 +54,29 @@ test('post passes action state to the cleanup executable', async () => {
     await post();
     assert.equal(fs.readFileSync(marker, 'utf8'), 'cleanup:/tmp/example-state');
     assert.equal(fs.existsSync(dir), false);
+  } finally {
+    process.env = previous;
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('main passes the requested command to the cluster executable', async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-main-'));
+  const marker = path.join(temp, 'marker');
+  fs.writeFileSync(path.join(temp, 'bin'), '#!/bin/sh\nprintf "%s" "$1" > "$TEST_MARKER"\n', { mode: 0o700 });
+  fs.writeFileSync(path.join(temp, 'state'), '');
+  const previous = { ...process.env };
+  try {
+    Object.assign(process.env, {
+      RUNNER_TEMP: temp,
+      GITHUB_STATE: path.join(temp, 'state'),
+      GITHUB_WORKSPACE: temp,
+      'INPUT_BINARY-PATH': 'bin',
+      TEST_MARKER: marker,
+    });
+    await main('create-k3s');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'create-k3s');
+    await assert.rejects(main('bogus'), /unknown cluster command/);
   } finally {
     process.env = previous;
     fs.rmSync(temp, { recursive: true, force: true });

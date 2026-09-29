@@ -1,0 +1,30 @@
+name: CI k3s cluster
+on: workflow_dispatch
+
+jobs:
+  cluster:
+    runs-on: [self-hosted, harvester-runners]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Create k3s cluster
+        id: cluster
+        uses: OWNER/REPO/actions/create-k3s-cluster@VERSION
+        with:
+          gateway-url: https://gateway.example.internal:8443
+          vm-count: '3'
+          image: default/ubuntu-24-04
+          network: default/vm-network
+          cpu: '2'
+          memory: 4Gi
+          boot-disk-size: 20Gi
+          username: ubuntu
+          k3s-version: v1.35.2+k3s1
+          binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-cluster-linux-amd64
+          binary-sha256: REPLACE_WITH_SHA256_FROM_SHA256SUMS
+      - name: Show nodes
+        env:
+          KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig-path }}
+        shell: bash
+        run: kubectl get nodes -o wide

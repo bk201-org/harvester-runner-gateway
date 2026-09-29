@@ -36,21 +36,37 @@ type clusterState struct {
 	IDs []string `json:"ids"`
 }
 
+// vmCluster describes the VMs created by createVMs. Statuses follow the
+// order in which the VMs were created.
+type vmCluster struct {
+	Dir, ConfigPath, PrivateKey string
+	Statuses                    []client.VMStatus
+}
+
 func Run(ctx context.Context, operation string, getenv func(string) string) error {
-	if operation != "create" && operation != "cleanup" {
+	if operation != "create" && operation != "create-k3s" && operation != "cleanup" {
 		return fmt.Errorf("unknown operation %q", operation)
 	}
-	if operation == "create" {
+	if operation == "create" || operation == "create-k3s" {
 		opt, err := readOptions(getenv)
 		if err != nil {
 			return err
+		}
+		var k3s k3sOptions
+		if operation == "create-k3s" {
+			if k3s, err = readK3sOptions(getenv); err != nil {
+				return err
+			}
 		}
 		api, err := newClient(opt, getenv)
 		if err != nil {
 			return err
 		}
 		defer api.Close()
-		return create(ctx, api, opt)
+		if operation == "create" {
+			return create(ctx, api, opt)
+		}
+		return createK3s(ctx, api, opt, k3s, sshRunner{})
 	}
 	statePath := getenv("STATE_cluster_state")
 	if statePath == "" {
@@ -124,57 +140,63 @@ func readOptions(getenv func(string) string) (options, error) {
 }
 
 func create(ctx context.Context, api vmAPI, opt options) error {
+	_, err := createVMs(ctx, api, opt)
+	return err
+}
+
+func createVMs(ctx context.Context, api vmAPI, opt options) (vmCluster, error) {
+	var none vmCluster
 	dir, err := os.MkdirTemp(opt.TempDir, "hvst-cluster-")
 	if err != nil {
-		return fmt.Errorf("create cluster directory: %w", err)
+		return none, fmt.Errorf("create cluster directory: %w", err)
 	}
 	if err := os.Chmod(dir, 0700); err != nil {
-		return err
+		return none, err
 	}
 	state := clusterState{Dir: dir, IDs: []string{}}
 	statePath := filepath.Join(dir, "cluster.json")
 	if err := writeState(statePath, state); err != nil {
-		return err
+		return none, err
 	}
 	if err := appendGitHubFile(opt.StateFile, "cluster_state", statePath); err != nil {
-		return err
+		return none, err
 	}
 	privateKey := filepath.Join(dir, "id_ed25519")
 	keygen := exec.CommandContext(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", privateKey)
 	if output, err := keygen.CombinedOutput(); err != nil {
-		return fmt.Errorf("generate SSH keypair: %w: %s", err, strings.TrimSpace(string(output)))
+		return none, fmt.Errorf("generate SSH keypair: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	publicKey, err := os.ReadFile(privateKey + ".pub")
 	if err != nil {
-		return fmt.Errorf("read generated SSH public key: %w", err)
+		return none, fmt.Errorf("read generated SSH public key: %w", err)
 	}
 	opt.Request.UserData, err = cloudConfig(opt.UserData, opt.Username, strings.TrimSpace(string(publicKey)))
 	if err != nil {
-		return err
+		return none, err
 	}
 	if err := provision(ctx, api, opt.Request, opt.Count, &state, statePath); err != nil {
-		return err
+		return none, err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, opt.WaitTimeout)
 	defer cancel()
 	statuses, err := waitAll(waitCtx, api, state.IDs, pollInterval)
 	if err != nil {
-		return err
+		return none, err
 	}
 	configPath := filepath.Join(dir, "ssh_config")
 	if err := writeSSHConfig(configPath, filepath.Join(dir, "known_hosts"), privateKey, opt.Username, statuses); err != nil {
-		return err
+		return none, err
 	}
 	ids, err := json.Marshal(state.IDs)
 	if err != nil {
-		return err
+		return none, err
 	}
 	for _, output := range [][2]string{{"vm-ids", string(ids)}, {"ssh-config-path", configPath}, {"private-key-path", privateKey}} {
 		if err := appendGitHubFile(opt.OutputFile, output[0], output[1]); err != nil {
-			return err
+			return none, err
 		}
 	}
-	return nil
+	return vmCluster{Dir: dir, ConfigPath: configPath, PrivateKey: privateKey, Statuses: statuses}, nil
 }
 
 func provision(ctx context.Context, api vmAPI, request client.VMRequest, count int, state *clusterState, statePath string) error {

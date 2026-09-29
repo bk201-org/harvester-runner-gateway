@@ -1,0 +1,80 @@
+name: Create CI k3s cluster
+description: Create Harvester VMs, install k3s over SSH, save the kubeconfig, and delete the VMs after the job
+inputs:
+  gateway-url:
+    description: HTTPS URL of harvester-runner-gateway
+    required: true
+  vm-count:
+    description: Number of VMs to create; the first is the k3s server and the rest are agents
+    required: true
+  image:
+    description: Approved Harvester image namespace/name
+    required: true
+  network:
+    description: Approved Harvester network namespace/name
+    required: true
+  cpu:
+    description: CPU cores per VM
+    required: true
+  memory:
+    description: Memory per VM, such as 4Gi
+    required: true
+  boot-disk-size:
+    description: Boot disk size per VM, such as 20Gi
+    required: true
+  username:
+    description: Guest SSH username; it needs passwordless sudo
+    required: true
+  binary-url:
+    description: HTTPS release URL for the cluster executable matching this runner architecture; mutually exclusive with binary-path
+    required: false
+  binary-path:
+    description: Local path to the cluster executable (relative paths resolve against the workspace); mutually exclusive with binary-url
+    required: false
+  binary-sha256:
+    description: SHA-256 of the cluster executable; required with binary-url, optional with binary-path
+    required: false
+  k3s-version:
+    description: Optional k3s release such as v1.35.2+k3s1; the stable channel is used when empty
+    required: false
+  ssh-timeout-seconds:
+    description: Shared timeout for SSH and cloud-init on all VMs
+    required: false
+    default: '300'
+  k3s-timeout-seconds:
+    description: Shared timeout for installing k3s and for all nodes to become Ready
+    required: false
+    default: '900'
+  ttl-seconds:
+    description: Optional VM lifetime in seconds; gateway default is six hours
+    required: false
+  user-data:
+    description: Optional additional #cloud-config YAML
+    required: false
+  wait-timeout-seconds:
+    description: Shared timeout for all VMs to become ready
+    required: false
+    default: '600'
+  audience:
+    description: GitHub OIDC audience
+    required: false
+    default: api://harvester-runner-gateway
+  ca-cert-path:
+    description: Optional PEM certificate path for the gateway
+    required: false
+outputs:
+  vm-ids:
+    description: JSON array of created VM IDs; the first is the server
+  server-vm-id:
+    description: ID of the k3s server VM
+  kubeconfig-path:
+    description: Path to the kubeconfig, whose server address is the server VM IP
+  ssh-config-path:
+    description: Path to the generated SSH config
+  private-key-path:
+    description: Path to the generated SSH private key
+runs:
+  using: node24
+  main: main.js
+  post: post.js
+  post-if: always()

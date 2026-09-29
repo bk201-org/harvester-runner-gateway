@@ -96,7 +96,8 @@ function run(binary, command) {
   });
 }
 
-async function main() {
+async function main(command = 'create') {
+  if (command !== 'create' && command !== 'create-k3s') throw new Error(`unknown cluster command ${command}`);
   const temp = process.env.RUNNER_TEMP;
   if (!temp) throw new Error('RUNNER_TEMP is required');
   const dir = fs.mkdtempSync(path.join(temp, 'hvst-cluster-bin-'));
@@ -108,7 +109,7 @@ async function main() {
     fs.writeFileSync(binary, data, { mode: 0o700 });
     saveState('binary_path', binary);
     registered = true;
-    await run(binary, 'create');
+    await run(binary, command);
   } catch (error) {
     if (!registered) fs.rmSync(dir, { recursive: true, force: true });
     throw error;
