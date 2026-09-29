@@ -37,6 +37,36 @@ func RejectionReason(err error) string {
 	return "verification_failed"
 }
 
+// RejectionMessage describes a rejection using only fixed, public diagnostics.
+// Never include token contents, provider errors, or configured policy values.
+func RejectionMessage(err error) string {
+	reason := RejectionReason(err)
+	var hint string
+	switch reason {
+	case "repository_not_allowed":
+		hint = "Repository is not allowed; ask the gateway administrator to check the workflow repository's numeric ID in repositories[].repositoryID"
+	case "workflow_not_allowed":
+		hint = "Workflow ref is not allowed; check allowedWorkflowRefs in the gateway repository policy, including the ref suffix"
+	case "event_not_allowed":
+		hint = "Workflow event is not allowed; check allowedEvents in the gateway repository policy"
+	case "runner_not_self_hosted":
+		hint = "A self-hosted runner is required"
+	case "audience_mismatch":
+		hint = "OIDC audience does not match; check the action audience input against the gateway OIDC audience"
+	case "issuer_mismatch":
+		hint = "OIDC issuer does not match the gateway configuration"
+	case "invalid_token":
+		hint = "OIDC token is invalid, expired, or could not be verified; check the gateway OIDC configuration and signing-key access"
+	case "missing_time_claim":
+		hint = "OIDC token is missing required time claims"
+	case "invalid_run_identity":
+		hint = "OIDC token does not contain a valid repository and workflow run identity"
+	default:
+		return "Bearer token rejected (verification_failed); check the gateway authentication logs"
+	}
+	return "Bearer token rejected (" + reason + "): " + hint
+}
+
 func reject(reason string) error { return rejectionError{reason: reason} }
 
 type Owner struct {

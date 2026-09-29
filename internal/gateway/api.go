@@ -201,7 +201,7 @@ func (s *Server) authorize(next action) http.HandlerFunc {
 		owner, policy, err := s.verifier.Verify(r.Context(), strings.TrimPrefix(header, "Bearer "), s.cfg)
 		if err != nil {
 			s.logger.WarnContext(r.Context(), "authentication rejected", "reason", auth.RejectionReason(err))
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer token rejected")
+			writeError(w, http.StatusUnauthorized, "unauthorized", auth.RejectionMessage(err))
 			return
 		}
 		next(w, r, owner, policy)

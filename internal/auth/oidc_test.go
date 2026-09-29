@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,5 +205,32 @@ func TestVerifyGitHubOIDCClaims(t *testing.T) {
 	}
 	if _, _, err := verifier.Verify(context.Background(), "not-a-jwt", cfg); !errors.Is(err, ErrUnauthorized) || RejectionReason(err) != "invalid_token" {
 		t.Fatalf("malformed token rejection = %v, reason = %q", err, RejectionReason(err))
+	}
+}
+
+func TestRejectionMessage(t *testing.T) {
+	for _, test := range []struct{ reason, hint string }{
+		{"repository_not_allowed", "repositories[].repositoryID"},
+		{"workflow_not_allowed", "allowedWorkflowRefs"},
+		{"event_not_allowed", "allowedEvents"},
+		{"runner_not_self_hosted", "self-hosted runner"},
+		{"audience_mismatch", "action audience input"},
+		{"issuer_mismatch", "OIDC issuer"},
+		{"invalid_token", "signing-key access"},
+		{"missing_time_claim", "time claims"},
+		{"invalid_run_identity", "workflow run identity"},
+	} {
+		t.Run(test.reason, func(t *testing.T) {
+			message := RejectionMessage(reject(test.reason))
+			if !strings.Contains(message, "("+test.reason+")") || !strings.Contains(message, test.hint) {
+				t.Fatalf("message = %q; want reason %q and hint %q", message, test.reason, test.hint)
+			}
+		})
+	}
+	for _, err := range []error{errors.New("provider-secret"), reject("unknown-secret")} {
+		message := RejectionMessage(err)
+		if strings.Contains(message, "secret") || !strings.Contains(message, "verification_failed") {
+			t.Fatalf("unsafe fallback message: %q", message)
+		}
 	}
 }

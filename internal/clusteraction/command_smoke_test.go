@@ -81,3 +81,48 @@ func TestCommandSmokeWithLocalToken(t *testing.T) {
 		t.Fatalf("cluster state remains after cleanup: %v", err)
 	}
 }
+
+func TestCommandReportsRepositoryRejection(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/vms" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"code":"unauthorized","message":"Bearer token rejected (repository_not_allowed): Repository is not allowed; ask the gateway administrator to check the workflow repository's numeric ID in repositories[].repositoryID"}`)
+	}))
+	defer server.Close()
+
+	temp := t.TempDir()
+	caPath := filepath.Join(temp, "ca.pem")
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"GITHUB_ACTIONS": "false", "GATEWAY_TOKEN": "secret-token",
+		"RUNNER_TEMP": temp, "GITHUB_STATE": filepath.Join(temp, "state"), "GITHUB_OUTPUT": filepath.Join(temp, "output"),
+		"INPUT_GATEWAY-URL": server.URL, "INPUT_CA-CERT-PATH": caPath,
+		"INPUT_VM-COUNT": "2", "INPUT_IMAGE": "default/ubuntu", "INPUT_NETWORK": "default/net",
+		"INPUT_CPU": "2", "INPUT_MEMORY": "4Gi", "INPUT_BOOT-DISK-SIZE": "20Gi", "INPUT_USERNAME": "ci",
+	}
+	if err := os.WriteFile(env["GITHUB_STATE"], nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := Run(context.Background(), "create", func(name string) string { return env[name] })
+	if err == nil {
+		t.Fatal("expected authentication failure")
+	}
+	for _, want := range []string{"create VM 1 of 2", "gateway HTTP 401", "repository_not_allowed", "repositories[].repositoryID"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q; want %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "secret-token") || calls.Load() != 1 {
+		t.Fatalf("credential leaked or authentication retried: err=%v calls=%d", err, calls.Load())
+	}
+	if _, err := os.Stat(env["GITHUB_OUTPUT"]); !os.IsNotExist(err) {
+		t.Fatalf("failed create wrote action outputs: %v", err)
+	}
+}

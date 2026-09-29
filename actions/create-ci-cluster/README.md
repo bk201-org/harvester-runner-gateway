@@ -51,6 +51,19 @@ delete every VM whose ID was returned and recorded. If the runner disappears or
 a create response is lost before its ID can be recorded, the gateway's TTL
 cleanup is the fallback.
 
+## Authentication failures
+
+A gateway HTTP 401 includes a rejection reason and a configuration hint.
+For `repository_not_allowed`, ask the gateway administrator to check that
+`repositories[].repositoryID` contains the numeric GitHub ID of the repository
+running the workflow (available as `github.repository_id`), rather than the
+repository hosting this action. For `workflow_not_allowed`, check the full
+workflow ref, including its branch or tag suffix, in `allowedWorkflowRefs`.
+For `event_not_allowed`, check `allowedEvents`.
+
+The gateway supplies these diagnostics; deploy the updated gateway to make
+them visible in action logs.
+
 ## Test locally without GitHub Actions
 
 Run `make test-cluster-action` from the repository root. This exercises the

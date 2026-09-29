@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
 )
 
 func decodeLogs(t *testing.T, data []byte) []map[string]any {
@@ -90,12 +92,17 @@ func TestResourceLogContainsOwnershipWithoutCredentials(t *testing.T) {
 func TestAuthenticationRejectionLogsReasonWithoutCredentials(t *testing.T) {
 	for _, test := range []struct {
 		name, header, reason, response string
+		realVerifier                   bool
 	}{
-		{"missing bearer", "", "bearer_required", "Bearer token required"},
-		{"rejected bearer", "Bearer header-secret", "verification_failed", "Bearer token rejected"},
+		{"missing bearer", "", "bearer_required", "Bearer token required", false},
+		{"rejected bearer", "Bearer header-secret", "verification_failed", "Bearer token rejected (verification_failed)", false},
+		{"invalid token", "Bearer header-secret", "invalid_token", "Bearer token rejected (invalid_token)", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := testServer(1, 1)
+			if test.realVerifier {
+				s.verifier = auth.NewVerifier("https://issuer.example", "api://gateway")
+			}
 			var output bytes.Buffer
 			s.logger = slog.New(slog.NewJSONHandler(&output, nil))
 			request := httptest.NewRequest(http.MethodGet, "/v1/quota", nil)
@@ -108,7 +115,7 @@ func TestAuthenticationRejectionLogsReasonWithoutCredentials(t *testing.T) {
 			if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), test.response) {
 				t.Fatalf("response = %d %q", response.Code, response.Body.String())
 			}
-			if strings.Contains(output.String(), "header-secret") {
+			if strings.Contains(output.String()+response.Body.String(), "header-secret") {
 				t.Fatalf("log contains credential: %s", output.String())
 			}
 			records := decodeLogs(t, output.Bytes())
