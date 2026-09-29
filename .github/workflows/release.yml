@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Build release artifacts
+        run: make cluster-release
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" --clobber \
+            dist/hvst-runner-gw-linux-amd64 \
+            dist/hvst-runner-gw-linux-arm64 \
+            dist/hvst-runner-gw-client-linux-amd64 \
+            dist/hvst-runner-gw-client-linux-arm64 \
+            dist/hvst-runner-gw-cluster-linux-amd64 \
+            dist/hvst-runner-gw-cluster-linux-arm64 \
+            dist/SHA256SUMS

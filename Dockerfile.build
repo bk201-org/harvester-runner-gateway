@@ -21,10 +21,13 @@ COPY --from=binary-build /out/ /
 
 FROM source AS release-build
 RUN mkdir -p /release \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /release/hvst-runner-gw-cluster-linux-amd64 ./cmd/hvst-runner-gw-cluster \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /release/hvst-runner-gw-cluster-linux-arm64 ./cmd/hvst-runner-gw-cluster \
+    && for arch in amd64 arm64; do \
+        for name in hvst-runner-gw hvst-runner-gw-client hvst-runner-gw-cluster; do \
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "/release/${name}-linux-${arch}" "./cmd/${name}" || exit 1; \
+        done; \
+    done \
     && cd /release \
-    && sha256sum hvst-runner-gw-cluster-linux-amd64 hvst-runner-gw-cluster-linux-arm64 > SHA256SUMS
+    && sha256sum hvst-runner-gw-linux-* hvst-runner-gw-client-linux-* hvst-runner-gw-cluster-linux-* > SHA256SUMS
 
 FROM scratch AS cluster-release
 COPY --from=release-build /release/ /
