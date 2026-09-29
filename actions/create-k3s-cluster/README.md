@@ -60,3 +60,15 @@ executable, so the release binary and its checksum are the same as for
 `create-ci-cluster`. See that README for building, publishing, and local
 testing. This action has no HA or embedded-etcd support and takes no extra k3s
 arguments.
+
+## Test locally without GitHub Actions
+
+`scripts/k3s-smoke.sh` runs the `create-k3s` command from your machine with the
+same [smoke configuration](../../README.md#local-shell) as
+`scripts/cluster-smoke.sh`. It creates 2 VMs by default (`GATEWAY_VM_COUNT`),
+installs k3s, checks that every node is Ready and that the saved kubeconfig
+points at the server VM, then deletes the VMs. Set `K3S_VERSION` to pin a
+release. Use `--no-cleanup` to keep the cluster; the script prints the kubeconfig
+path, SSH commands, and a `--cleanup TEMP_DIR` command. The VM settings and
+`CLUSTER_SMOKE_BINARY` work as in the `create-ci-cluster` script. The VMs need
+outbound access to `get.k3s.io`, and this machine must reach them over SSH.

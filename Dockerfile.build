@@ -41,6 +41,7 @@ FROM source AS test-cluster-action
 COPY actions/create-ci-cluster/ ./actions/create-ci-cluster/
 COPY actions/create-k3s-cluster/ ./actions/create-k3s-cluster/
 COPY scripts/cluster-smoke.sh ./scripts/cluster-smoke.sh
+COPY scripts/k3s-smoke.sh ./scripts/k3s-smoke.sh
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -50,4 +51,5 @@ RUN : "$RUN_ID" \
     && node --test actions/create-ci-cluster/launcher.test.js \
     && node --check actions/create-k3s-cluster/main.js \
     && node --check actions/create-k3s-cluster/post.js \
-    && bash -n scripts/cluster-smoke.sh
+    && bash -n scripts/cluster-smoke.sh \
+    && bash -n scripts/k3s-smoke.sh
