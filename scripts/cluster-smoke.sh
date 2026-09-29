@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: cluster-smoke.sh [--no-cleanup | --cleanup TEMP_DIR]
+
+  --no-cleanup       Keep created VMs and print a manual cleanup command.
+  --cleanup TEMP_DIR Delete VMs saved by a previous --no-cleanup run.
+EOF
+}
+
+no_cleanup=false
+cleanup_dir=""
+if [[ $# -eq 1 && ${1:-} == --no-cleanup ]]; then
+  no_cleanup=true
+elif [[ $# -eq 2 && ${1:-} == --cleanup && -n $2 ]]; then
+  cleanup_dir=$2
+elif [[ $# -eq 1 && ( ${1:-} == --help || ${1:-} == -h ) ]]; then
+  usage
+  exit 0
+elif [[ $# -ne 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ -n "${GATEWAY_SMOKE_CONFIG:-}" ]]; then
   smoke_config=$GATEWAY_SMOKE_CONFIG
@@ -23,14 +46,15 @@ if [[ ! -r "$token_file" || ( -n "$ca_cert" && ! -r "$ca_cert" ) ]]; then
   exit 2
 fi
 
-temp_dir=$(mktemp -d)
-chmod 700 "$temp_dir"
+if [[ -n "$cleanup_dir" ]]; then
+  temp_dir=$(cd -- "$cleanup_dir" && pwd)
+else
+  temp_dir=$(mktemp -d)
+  chmod 700 "$temp_dir"
+fi
 state_file="$temp_dir/github_state"
 output_file="$temp_dir/github_output"
 binary="$temp_dir/hvst-runner-gw-cluster"
-: > "$state_file"
-: > "$output_file"
-chmod 600 "$state_file" "$output_file"
 
 common_env=(
   "GITHUB_ACTIONS=false"
@@ -41,18 +65,80 @@ common_env=(
   "INPUT_CA-CERT-PATH=$ca_cert"
 )
 
+cluster_state_path() {
+  sed -n 's/^cluster_state=//p' "$state_file" | tail -n 1
+}
+
+run_cluster_cleanup() {
+  local cluster_state=$1
+  local backup="$temp_dir/cluster_state_backup"
+  if ! cp -- "$cluster_state" "$backup"; then
+    return 1
+  fi
+  if env "${common_env[@]}" "STATE_cluster_state=$cluster_state" "$binary" cleanup; then
+    rm -f -- "$backup"
+    return 0
+  fi
+  if [[ ! -f "$cluster_state" ]]; then
+    mkdir -p -- "$(dirname -- "$cluster_state")"
+    chmod 700 -- "$(dirname -- "$cluster_state")"
+    cp -- "$backup" "$cluster_state"
+    chmod 600 -- "$cluster_state"
+  fi
+  return 1
+}
+
+show_manual_cleanup() {
+  printf 'Saved cluster files: %s\n' "$temp_dir"
+  printf 'To delete the VMs and saved files, run:\n'
+  printf '  (cd %q && GATEWAY_SMOKE_CONFIG=%q %q --cleanup %q)\n' \
+    "$PWD" "$smoke_config" "$repo_dir/scripts/cluster-smoke.sh" "$temp_dir"
+}
+
+if [[ -n "$cleanup_dir" ]]; then
+  if [[ ! -f "$state_file" || ! -x "$binary" ]]; then
+    echo "Cannot find saved cluster state and executable in $temp_dir" >&2
+    exit 2
+  fi
+  cluster_state=$(cluster_state_path)
+  if [[ -z "$cluster_state" ]]; then
+    echo "No cluster state recorded in $state_file" >&2
+    exit 2
+  fi
+  printf 'Cleaning up saved cluster in %s\n' "$temp_dir"
+  run_cluster_cleanup "$cluster_state"
+  rm -rf -- "$temp_dir"
+  echo "Cluster cleanup complete"
+  exit 0
+fi
+
+: > "$state_file"
+: > "$output_file"
+chmod 600 "$state_file" "$output_file"
+
 cleanup() {
   local result=$?
   trap - EXIT
   local cluster_state
-  cluster_state=$(sed -n 's/^cluster_state=//p' "$state_file" | tail -n 1)
+  cluster_state=$(cluster_state_path)
   if [[ -n "$cluster_state" ]]; then
-    if ! env "${common_env[@]}" "STATE_cluster_state=$cluster_state" "$binary" cleanup; then
-      echo "Cluster cleanup failed" >&2
-      result=1
+    if [[ "$no_cleanup" == true ]]; then
+      echo "Leaving the cluster running (--no-cleanup)."
+      show_manual_cleanup
+    else
+      echo "Cleaning up cluster..."
+      if run_cluster_cleanup "$cluster_state"; then
+        rm -rf -- "$temp_dir"
+        echo "Cluster cleanup complete"
+      else
+        echo "Cluster cleanup failed; saved files are available for retry." >&2
+        show_manual_cleanup
+        result=1
+      fi
     fi
+  else
+    rm -rf -- "$temp_dir"
   fi
-  rm -rf -- "$temp_dir"
   if [[ "$result" -eq 0 && -n "${vm_ids:-}" ]]; then
     echo "Cluster command smoke test passed for VM IDs: $vm_ids"
   fi
@@ -60,10 +146,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+printf 'Using smoke config: %s\n' "$smoke_config"
 if [[ -n "${CLUSTER_SMOKE_BINARY:-}" ]]; then
+  printf 'Using cluster executable: %s\n' "$CLUSTER_SMOKE_BINARY"
   cp -- "$CLUSTER_SMOKE_BINARY" "$binary"
   chmod 700 "$binary"
 else
+  echo "Building cluster executable..."
   (cd "$repo_dir" && CGO_ENABLED=0 go build -trimpath -o "$binary" ./cmd/hvst-runner-gw-cluster)
 fi
 
@@ -73,6 +162,7 @@ if [[ -n "${GATEWAY_USER_DATA_FILE:-}" ]]; then
 fi
 
 vm_count=${GATEWAY_VM_COUNT:-1}
+printf 'Creating %s VM(s) and waiting for readiness...\n' "$vm_count"
 env "${common_env[@]}" \
   "GITHUB_STATE=$state_file" \
   "GITHUB_OUTPUT=$output_file" \
@@ -88,7 +178,8 @@ env "${common_env[@]}" \
   "INPUT_USER-DATA=$user_data" \
   "$binary" create
 
-cluster_state=$(sed -n 's/^cluster_state=//p' "$state_file" | tail -n 1)
+echo "Validating cluster state and command outputs..."
+cluster_state=$(cluster_state_path)
 [[ -n "$cluster_state" && -f "$cluster_state" ]]
 vm_ids=$(sed -n 's/^vm-ids=//p' "$output_file" | tail -n 1)
 ssh_config=$(sed -n 's/^ssh-config-path=//p' "$output_file" | tail -n 1)
@@ -98,6 +189,14 @@ jq -e --argjson expected "$vm_count" \
   <<< "$vm_ids" >/dev/null
 [[ -f "$ssh_config" && -f "$private_key" ]]
 ssh-keygen -y -f "$private_key" >/dev/null
+printf 'VM IDs: %s\nSSH config: %s\nPrivate key: %s\n' "$vm_ids" "$ssh_config" "$private_key"
 while IFS= read -r vm_id; do
-  ssh -G -F "$ssh_config" "$vm_id" >/dev/null
+  printf 'Checking SSH configuration for %s...\n' "$vm_id"
+  ssh -T -G -F "$ssh_config" "$vm_id" >/dev/null
 done < <(jq -r '.[]' <<< "$vm_ids")
+echo "Cluster state, key, and SSH configuration are valid."
+if [[ "$no_cleanup" == true ]]; then
+  while IFS= read -r vm_id; do
+    printf 'Connect with: ssh -F %q %q\n' "$ssh_config" "$vm_id"
+  done < <(jq -r '.[]' <<< "$vm_ids")
+fi

@@ -57,9 +57,15 @@ The script reads `gatewayURL`, `image`, `network`, `tokenFile`, and optional
 `${XDG_CONFIG_HOME:-$HOME/.config}/harvester-runner-gateway/smoke.json`, the
 same location as `./scripts/gateway-smoke.sh`.
 
-The script builds and invokes `hvst-runner-gw-cluster create`, checks the
-returned VM IDs, key, and SSH config, then invokes `cleanup` on exit, including
-after a failed create. It creates one real VM by default. Set `GATEWAY_VM_COUNT`,
+The script builds and invokes `hvst-runner-gw-cluster create`, reports
+progress and the returned VM IDs, then checks the key and SSH config. It invokes
+`cleanup` on exit, including after a failed create. Run with `--no-cleanup` to
+keep the VMs and SSH files; the script prints SSH and manual cleanup commands.
+The cleanup command uses the saved state and removes the saved files on success.
+Keep the printed temp directory until you run it. The VMs still expire according
+to `GATEWAY_TTL_SECONDS` (default 1800 seconds).
+
+It creates one real VM by default. Set `GATEWAY_VM_COUNT`,
 `GATEWAY_USERNAME`, `GATEWAY_CPU`, `GATEWAY_MEMORY`, `GATEWAY_BOOT_DISK_SIZE`,
 `GATEWAY_TTL_SECONDS`, or `GATEWAY_USER_DATA_FILE` to override the defaults.
 Set `CLUSTER_SMOKE_BINARY` to test an existing executable instead of building
