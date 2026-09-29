@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,14 +43,16 @@ type k3sOptions struct {
 
 // remoteRunner runs a bash script on a VM, as root when root is true, and
 // returns its standard output. The script is passed on standard input so that
-// secrets never appear in process arguments.
+// secrets never appear in process arguments. When live is not nil, standard
+// output and error are also copied to it line by line as they arrive; only
+// pass it for scripts whose output is safe to log.
 type remoteRunner interface {
-	Run(ctx context.Context, sshConfig, host string, root bool, script string) (string, error)
+	Run(ctx context.Context, sshConfig, host string, root bool, script string, live io.Writer) (string, error)
 }
 
 type sshRunner struct{}
 
-func (sshRunner) Run(ctx context.Context, sshConfig, host string, root bool, script string) (string, error) {
+func (sshRunner) Run(ctx context.Context, sshConfig, host string, root bool, script string, live io.Writer) (string, error) {
 	remote := "bash -s"
 	if root {
 		remote = "sudo -n bash -s"
@@ -59,6 +62,12 @@ func (sshRunner) Run(ctx context.Context, sshConfig, host string, root bool, scr
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if live != nil {
+		lines := &linePrefixWriter{out: live, prefix: "[" + host + "] "}
+		defer lines.Flush()
+		cmd.Stdout = io.MultiWriter(&stdout, lines)
+		cmd.Stderr = io.MultiWriter(&stderr, lines)
+	}
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if len(msg) > maxRemoteError {
@@ -70,6 +79,39 @@ func (sshRunner) Run(ctx context.Context, sshConfig, host string, root bool, scr
 		return stdout.String(), err
 	}
 	return stdout.String(), nil
+}
+
+// linePrefixWriter writes complete lines to out with a prefix. It is safe for
+// concurrent use because ssh stdout and stderr are copied by separate goroutines.
+type linePrefixWriter struct {
+	mu     sync.Mutex
+	out    io.Writer
+	prefix string
+	buf    []byte
+}
+
+func (w *linePrefixWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		fmt.Fprintf(w.out, "%s%s\n", w.prefix, strings.TrimRight(string(w.buf[:i]), "\r"))
+		w.buf = w.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+func (w *linePrefixWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.buf) > 0 {
+		fmt.Fprintf(w.out, "%s%s\n", w.prefix, strings.TrimRight(string(w.buf), "\r"))
+		w.buf = nil
+	}
 }
 
 func readK3sOptions(getenv func(string) string) (k3sOptions, error) {
@@ -152,22 +194,24 @@ func setupK3s(ctx context.Context, runner remoteRunner, cluster vmCluster, opt k
 		if i == 0 {
 			role, url = "server", ""
 		}
-		logf("installing k3s %s on %s", role, status.ID)
-		out, err := runner.Run(installCtx, cluster.ConfigPath, status.ID, true,
-			installScript(role, opt.Version, token, status.ID, url))
-		if strings.TrimSpace(out) != "" {
-			logf("%s", strings.TrimSpace(out))
-		}
+		logf("installing k3s %s on %s (version %s, server %s)", role, status.ID, versionLabel(opt.Version), serverURL)
+		started := time.Now()
+		_, err := runner.Run(installCtx, cluster.ConfigPath, status.ID, true,
+			installScript(role, opt.Version, token, status.ID, url), logWriter)
 		if err != nil {
+			logf("k3s %s install on %s failed after %s", role, status.ID, time.Since(started).Round(time.Second))
 			diagnose(runner, cluster.ConfigPath, status.ID, role)
 			return "", fmt.Errorf("install k3s %s on %s: %w", role, status.ID, err)
 		}
+		logf("k3s %s installed on %s in %s", role, status.ID, time.Since(started).Round(time.Second))
 	}
+	logf("waiting for %d node(s) to become Ready", len(cluster.Statuses))
 
 	if err := waitNodesReady(installCtx, runner, cluster); err != nil {
 		return "", err
 	}
-	out, err := runner.Run(installCtx, cluster.ConfigPath, cluster.Statuses[0].ID, true, "cat "+shellQuote(k3sKubeconfig)+"\n")
+	logf("reading kubeconfig from %s:%s", cluster.Statuses[0].ID, k3sKubeconfig)
+	out, err := runner.Run(installCtx, cluster.ConfigPath, cluster.Statuses[0].ID, true, "cat "+shellQuote(k3sKubeconfig)+"\n", nil)
 	if err != nil {
 		return "", fmt.Errorf("read kubeconfig from %s: %w", cluster.Statuses[0].ID, err)
 	}
@@ -185,18 +229,22 @@ func setupK3s(ctx context.Context, runner remoteRunner, cluster vmCluster, opt k
 
 func waitSSH(ctx context.Context, runner remoteRunner, sshConfig, id string) error {
 	var last error
-	for {
-		if _, last = runner.Run(ctx, sshConfig, id, false, "true\n"); last == nil {
+	started := time.Now()
+	for attempt := 1; ; attempt++ {
+		if _, last = runner.Run(ctx, sshConfig, id, false, "true\n", nil); last == nil {
+			logf("SSH to %s is ready after %d attempt(s), %s", id, attempt, time.Since(started).Round(time.Second))
 			break
 		}
+		logf("SSH to %s not ready (attempt %d): %v", id, attempt, last)
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("SSH to %s did not become ready: %w (last error: %v)", id, ctx.Err(), last)
 		case <-time.After(sshPollInterval):
 		}
 	}
-	const settle = "if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait >/dev/null 2>&1 || true; fi\n"
-	if _, err := runner.Run(ctx, sshConfig, id, true, settle); err != nil {
+	logf("waiting for cloud-init on %s", id)
+	const settle = "if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait --long 2>&1 || echo \"cloud-init status exited with $?\"; else echo 'cloud-init is not installed'; fi\n"
+	if _, err := runner.Run(ctx, sshConfig, id, true, settle, logWriter); err != nil {
 		return fmt.Errorf("prepare %s (passwordless sudo is required): %w", id, err)
 	}
 	return nil
@@ -206,10 +254,17 @@ func waitNodesReady(ctx context.Context, runner remoteRunner, cluster vmCluster)
 	server := cluster.Statuses[0].ID
 	var last error
 	var missing []string
+	var lastTable string
 	for {
-		out, err := runner.Run(ctx, cluster.ConfigPath, server, true, "k3s kubectl get nodes --no-headers\n")
+		out, err := runner.Run(ctx, cluster.ConfigPath, server, true, "k3s kubectl get nodes --no-headers\n", nil)
 		last = err
-		if err == nil {
+		if err != nil {
+			logf("k3s is not answering on %s yet: %v", server, err)
+		} else {
+			if table := strings.TrimSpace(out); table != lastTable {
+				lastTable = table
+				logf("nodes:\n%s", table)
+			}
 			ready := readyNodes(out)
 			missing = missing[:0]
 			for _, status := range cluster.Statuses {
@@ -257,7 +312,7 @@ func diagnose(runner remoteRunner, sshConfig, id, role string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := runner.Run(ctx, sshConfig, id, true, "journalctl -u "+unit+" -n 50 --no-pager\n")
+	out, err := runner.Run(ctx, sshConfig, id, true, "journalctl -u "+unit+" -n 50 --no-pager\n", nil)
 	if err != nil {
 		logf("could not read %s logs from %s: %v", unit, id, err)
 		return
@@ -275,11 +330,58 @@ func installScript(role, version, token, nodeName, serverURL string) string {
 	if serverURL != "" {
 		fmt.Fprintf(&script, "export K3S_URL=%s\n", shellQuote(serverURL))
 	}
-	// Redirect stdin so no command consumes the rest of this script.
-	fmt.Fprintf(&script, "installer=$(mktemp)\ntrap 'rm -f \"$installer\"' EXIT\n"+
-		"curl -fsSL --retry 5 --retry-connrefused %s -o \"$installer\" </dev/null\n"+
-		"sh \"$installer\" %s </dev/null\n", shellQuote(k3sInstallURL), role)
+	// Redirect stdin so no command consumes the rest of this script. Nothing
+	// below prints the token, so the output is safe to stream to the job log.
+	script.WriteString(`echo "== host =="
+hostname || true
+date -u || true
+uname -r || true
+(. /etc/os-release && echo "$PRETTY_NAME") || true
+echo "== network =="
+ip -br addr 2>&1 || true
+ip route 2>&1 || true
+grep -v '^#' /etc/resolv.conf 2>&1 || true
+env | grep -i '^\(http\|https\|no\)_proxy=' || echo "no proxy environment variables"
+getent hosts get.k3s.io || echo "DNS lookup for get.k3s.io failed"
+echo "== download =="
+installer=$(mktemp)
+headers=$(mktemp)
+trap 'rm -f "$installer" "$headers"' EXIT
+downloaded=false
+for attempt in 1 2 3 4 5; do
+  echo "downloading ` + k3sInstallURL + ` (attempt $attempt/5)"
+  code=$(curl -sS -L --connect-timeout 15 --max-time 120 -D "$headers" -o "$installer" -w '%{http_code}' ` + shellQuote(k3sInstallURL) + ` </dev/null) || code=000
+  if [ "$code" = 200 ]; then
+    downloaded=true
+    break
+  fi
+  echo "attempt $attempt failed: HTTP status $code"
+  echo "-- response headers --"
+  cat "$headers" || true
+  echo "-- response body (first 500 bytes) --"
+  head -c 500 "$installer" || true
+  echo
+  if [ "$attempt" -lt 5 ]; then
+    echo "retrying in $((attempt * 5))s"
+    sleep $((attempt * 5))
+  fi
+done
+if [ "$downloaded" != true ]; then
+  echo "could not download the k3s installer" >&2
+  exit 1
+fi
+echo "downloaded installer: $(wc -c < "$installer") bytes"
+echo "== install k3s ` + role + ` =="
+`)
+	fmt.Fprintf(&script, "sh \"$installer\" %s </dev/null\n", role)
 	return script.String()
+}
+
+func versionLabel(version string) string {
+	if version == "" {
+		return "stable channel"
+	}
+	return version
 }
 
 func newToken() (string, error) {

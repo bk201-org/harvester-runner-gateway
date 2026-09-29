@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,7 +29,7 @@ type fakeRunner struct {
 	kubeconfig   string
 }
 
-func (f *fakeRunner) Run(_ context.Context, _, host string, root bool, script string) (string, error) {
+func (f *fakeRunner) Run(_ context.Context, _, host string, root bool, script string, _ io.Writer) (string, error) {
 	f.calls = append(f.calls, remoteCall{host, root, script})
 	switch {
 	case script == "true\n":
@@ -235,7 +236,7 @@ func TestSSHRunnerUsesStdinAndSudo(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_SSH_ARGS", filepath.Join(dir, "args"))
 	t.Setenv("FAKE_SSH_STDIN", filepath.Join(dir, "stdin"))
-	out, err := sshRunner{}.Run(context.Background(), "cfg", "vm-1", true, "echo secret\n")
+	out, err := sshRunner{}.Run(context.Background(), "cfg", "vm-1", true, "echo secret\n", nil)
 	if err != nil || strings.TrimSpace(out) != "done" {
 		t.Fatalf("output = %q, %v", out, err)
 	}
@@ -280,5 +281,80 @@ func TestCreateK3sWritesOutputs(t *testing.T) {
 	}
 	if len(runner.installs()) != 2 {
 		t.Fatalf("installs = %d", len(runner.installs()))
+	}
+}
+
+func TestInstallScriptIsVerboseAndKeepsTokenPrivate(t *testing.T) {
+	script := installScript("server", "v1.35.2+k3s1", "s3cret-token", "vm-1", "")
+	for _, want := range []string{"== network ==", "getent hosts get.k3s.io", "response headers", "response body", "attempt $attempt failed: HTTP status $code", "== install k3s server =="} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("install script lacks %q: %s", want, script)
+		}
+	}
+	if strings.Count(script, "s3cret-token") != 1 || strings.Contains(script, "set -x") || strings.Contains(script, "K3S_TOKEN\"") {
+		t.Fatalf("token may be echoed: %s", script)
+	}
+}
+
+func TestLinePrefixWriter(t *testing.T) {
+	var out strings.Builder
+	w := &linePrefixWriter{out: &out, prefix: "[vm] "}
+	w.Write([]byte("one\ntw"))
+	w.Write([]byte("o\r\nthree"))
+	w.Flush()
+	if got, want := out.String(), "[vm] one\n[vm] two\n[vm] three\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestSSHRunnerStreamsLiveOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncat >/dev/null\necho out-line\necho err-line >&2\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var live strings.Builder
+	out, err := sshRunner{}.Run(context.Background(), "cfg", "vm-1", false, "true\n", &live)
+	if err != nil || out != "out-line\n" {
+		t.Fatalf("output = %q, %v", out, err)
+	}
+	for _, want := range []string{"[vm-1] out-line\n", "[vm-1] err-line\n"} {
+		if !strings.Contains(live.String(), want) {
+			t.Fatalf("live output lacks %q: %q", want, live.String())
+		}
+	}
+}
+
+func TestInstallScriptReportsDownloadFailure(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not available")
+	}
+	dir := t.TempDir()
+	tools := map[string]string{
+		"curl": "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -D) h=$2; shift;; -o) o=$2; shift;; esac; shift; done\n" +
+			"printf 'HTTP/2 500\\r\\nserver: fake\\r\\n' > \"$h\"; echo 'fake upstream failure' > \"$o\"; printf 500\n",
+		"sleep": "#!/bin/sh\nexit 0\n",
+	}
+	for name, body := range tools {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command(bash, "-s")
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd.Stdin = strings.NewReader(installScript("server", "", "tok", "vm-1", ""))
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("script succeeded despite HTTP 500: %s", out)
+	}
+	for _, want := range []string{"attempt 5 failed: HTTP status 500", "server: fake", "fake upstream failure", "retrying in 5s", "could not download the k3s installer"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(string(out), "tok\n") {
+		t.Fatalf("output leaks the token:\n%s", out)
 	}
 }
