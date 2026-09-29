@@ -29,8 +29,12 @@ vet:
 	$(DOCKER) build -f $(BUILD_FILE) --target vet \
 		--build-arg RUN_ID=$$(date +%s%N) .
 
-docker-build:
+image:
 	$(DOCKER) build -t $(IMAGE) .
+
+
+push:
+	$(DOCKER) build -t $(IMAGE) . --push
 
 clean:
 	rm -f $(OUTPUT_BIN_DIR)/$(BINARY) $(OUTPUT_BIN_DIR)/$(CLIENT_BINARY)
