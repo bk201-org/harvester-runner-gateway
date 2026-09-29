@@ -26,7 +26,7 @@ on:
 
 jobs:
   smoke:
-    runs-on: [harvester-runners]
+    runs-on: [self-hosted, harvester-runners]
     permissions:
       contents: read
       id-token: write
@@ -42,6 +42,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false
       - name: Build gateway and client
         run: make build
       - name: Exercise focused VM and volume lifecycles
