@@ -17,7 +17,7 @@ local executable, such as one built earlier in the same job (`binary-sha256` is
 optional there and checked when given). The two are mutually exclusive. The
 [example workflow](../../examples/cluster-workflow.yml) contains placeholders
 for the future GitHub repository, release tag, and digest, and
-[smoke-create-ci-cluster](../../.github/workflows/smoke-create-ci-cluster.yml)
+[action test workflow](../../.github/workflows/test-action-create-ci-cluster.yml)
 builds the binary locally and SSHes into the created VMs.
 
 Inputs `gateway-url`, `vm-count`, `image`, `network`, `cpu`, `memory`,

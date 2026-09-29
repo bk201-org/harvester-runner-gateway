@@ -1,4 +1,4 @@
-name: Create CI cluster smoke test
+name: Test create CI cluster action
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ on:
         type: string
 
 jobs:
-  smoke-create-ci-cluster:
+  test-action-create-ci-cluster:
     runs-on: [self-hosted, harvester-runners]
     timeout-minutes: 30
     permissions:
