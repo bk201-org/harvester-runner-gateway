@@ -1,0 +1,108 @@
+name: Create CI cluster smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      gateway_url:
+        description: Gateway URL (defaults to the GATEWAY_URL repository variable)
+        required: false
+        type: string
+      gateway_image:
+        description: VM image (defaults to the GATEWAY_IMAGE repository variable)
+        required: false
+        type: string
+      gateway_network:
+        description: VM network (defaults to the GATEWAY_NETWORK repository variable)
+        required: false
+        type: string
+      gateway_audience:
+        description: OIDC audience (defaults to the GATEWAY_AUDIENCE repository variable)
+        required: false
+        type: string
+      gateway_ca_cert:
+        description: CA certificate path on the runner (defaults to the GATEWAY_CA_CERT repository variable)
+        required: false
+        type: string
+
+jobs:
+  smoke-create-ci-cluster:
+    runs-on: [self-hosted, harvester-runners]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GATEWAY_URL: ${{ inputs.gateway_url || vars.GATEWAY_URL }}
+      GATEWAY_IMAGE: ${{ inputs.gateway_image || vars.GATEWAY_IMAGE }}
+      GATEWAY_NETWORK: ${{ inputs.gateway_network || vars.GATEWAY_NETWORK }}
+      GATEWAY_AUDIENCE: ${{ inputs.gateway_audience || vars.GATEWAY_AUDIENCE }}
+      GATEWAY_CA_CERT: ${{ inputs.gateway_ca_cert || vars.GATEWAY_CA_CERT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build cluster binary
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          make cluster-release
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64 | arm64) arch=arm64 ;;
+            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          binary="dist/hvst-runner-gw-cluster-linux-${arch}"
+          test -f "$binary"
+          chmod +x "$binary"
+          echo "path=$binary" >> "$GITHUB_OUTPUT"
+      - name: Create VMs
+        id: cluster
+        uses: ./actions/create-ci-cluster
+        with:
+          gateway-url: ${{ env.GATEWAY_URL }}
+          vm-count: '2'
+          image: ${{ env.GATEWAY_IMAGE }}
+          network: ${{ env.GATEWAY_NETWORK }}
+          cpu: '2'
+          memory: 4Gi
+          boot-disk-size: 20Gi
+          username: ubuntu
+          binary-path: ${{ steps.build.outputs.path }}
+          ttl-seconds: '3600'
+          audience: ${{ env.GATEWAY_AUDIENCE || 'api://harvester-runner-gateway' }}
+          ca-cert-path: ${{ env.GATEWAY_CA_CERT }}
+          user-data: |
+            #cloud-config
+            package_update: false
+      - name: SSH to every VM
+        env:
+          VM_IDS: ${{ steps.cluster.outputs.vm-ids }}
+          SSH_CONFIG: ${{ steps.cluster.outputs.ssh-config-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t ids < <(jq -r '.[]' <<< "$VM_IDS")
+          if [ "${#ids[@]}" -ne 2 ]; then
+            echo "expected 2 VMs, got ${#ids[@]}" >&2
+            exit 1
+          fi
+          ssh_vm() {
+            ssh -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=10 "$@"
+          }
+          for id in "${ids[@]}"; do
+            echo "::group::$id"
+            connected=false
+            for attempt in $(seq 1 30); do
+              if ssh_vm "$id" true; then
+                connected=true
+                break
+              fi
+              echo "SSH to $id not ready (attempt $attempt/30)"
+              sleep 10
+            done
+            if [ "$connected" != true ]; then
+              echo "::error::SSH to $id did not become ready"
+              exit 1
+            fi
+            ssh_vm "$id" 'hostname && uname -a && cloud-init status --wait'
+            echo "::endgroup::"
+          done

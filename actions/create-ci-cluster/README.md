@@ -11,13 +11,19 @@ allow the repository and workflow ref in its policy. The action uses GitHub
 OIDC for both creation and post-job deletion.
 
 Build release assets with `make cluster-release`. Publish both executables and
-`SHA256SUMS` under a release tag. Supply the URL and the matching SHA-256 of the
-binary for the runner architecture. The [example workflow](../../examples/cluster-workflow.yml)
-contains placeholders for the future GitHub repository, release tag, and digest.
+`SHA256SUMS` under a release tag. Supply either `binary-url` with the matching
+SHA-256 of the binary for the runner architecture, or `binary-path` with a
+local executable, such as one built earlier in the same job (`binary-sha256` is
+optional there and checked when given). The two are mutually exclusive. The
+[example workflow](../../examples/cluster-workflow.yml) contains placeholders
+for the future GitHub repository, release tag, and digest, and
+[smoke-create-ci-cluster](../../.github/workflows/smoke-create-ci-cluster.yml)
+builds the binary locally and SSHes into the created VMs.
 
 Inputs `gateway-url`, `vm-count`, `image`, `network`, `cpu`, `memory`,
-`boot-disk-size`, `username`, `binary-url`, and `binary-sha256` are required.
-Optional inputs are `ttl-seconds` (gateway default six hours), `user-data`,
+`boot-disk-size`, and `username` are required. Optional inputs are `binary-url`,
+`binary-path`, `binary-sha256` (see above), `ttl-seconds` (gateway default six
+hours), `user-data`,
 `wait-timeout-seconds` (default 600), `audience` (default
 `api://harvester-runner-gateway`), and `ca-cert-path`.
 

@@ -6,7 +6,30 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { post, verifiedBinary } = require('./launcher');
+const { loadBinary, post, verifiedBinary } = require('./launcher');
+
+test('loadBinary reads a local path, optionally verifying the checksum', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-path-'));
+  try {
+    const data = Buffer.from('local executable');
+    fs.writeFileSync(path.join(dir, 'bin'), data);
+    const sha = crypto.createHash('sha256').update(data).digest('hex');
+    const env = { GITHUB_WORKSPACE: dir, 'INPUT_BINARY-PATH': 'bin' };
+    assert.deepEqual(await loadBinary(env), data);
+    assert.deepEqual(await loadBinary({ ...env, 'INPUT_BINARY-SHA256': sha }), data);
+    await assert.rejects(loadBinary({ ...env, 'INPUT_BINARY-SHA256': '0'.repeat(64) }), /verification/);
+    await assert.rejects(loadBinary({ ...env, 'INPUT_BINARY-PATH': 'missing' }), /does not exist/);
+    await assert.rejects(loadBinary({ ...env, 'INPUT_BINARY-PATH': '.' }), /regular file/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadBinary validates input combinations', async () => {
+  await assert.rejects(loadBinary({}), /required/);
+  await assert.rejects(loadBinary({ 'INPUT_BINARY-URL': 'https://example.com/x', 'INPUT_BINARY-PATH': 'x' }), /mutually exclusive/);
+  await assert.rejects(loadBinary({ 'INPUT_BINARY-URL': 'https://example.com/x' }), /64 hexadecimal/);
+});
 
 test('binary verification rejects a wrong checksum', () => {
   const data = Buffer.from('cluster executable');

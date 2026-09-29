@@ -20,6 +20,29 @@ function verifiedBinary(data, expected) {
   return data;
 }
 
+function readLocalBinary(file, base) {
+  const resolved = path.resolve(base, file);
+  let stat;
+  try { stat = fs.statSync(resolved); } catch { throw new Error('binary-path does not exist'); }
+  if (!stat.isFile()) throw new Error('binary-path must be a regular file');
+  if (stat.size > maxBinaryBytes) throw new Error('binary-path exceeds 100 MiB');
+  return fs.readFileSync(resolved);
+}
+
+async function loadBinary(env = process.env) {
+  const url = env['INPUT_BINARY-URL'] || '';
+  const file = env['INPUT_BINARY-PATH'] || '';
+  const sha = env['INPUT_BINARY-SHA256'] || '';
+  if (url && file) throw new Error('binary-url and binary-path are mutually exclusive');
+  if (!url && !file) throw new Error('one of binary-url or binary-path is required');
+  if (url) {
+    if (!/^[a-f0-9]{64}$/i.test(sha)) throw new Error('binary-sha256 must be 64 hexadecimal characters');
+    return verifiedBinary(await download(url), sha);
+  }
+  const data = readLocalBinary(file, env.GITHUB_WORKSPACE || process.cwd());
+  return sha ? verifiedBinary(data, sha) : data;
+}
+
 function download(url, redirects = 0) {
   let target;
   try { target = new URL(url); } catch { return Promise.reject(new Error('binary-url must be a valid HTTPS URL')); }
@@ -81,7 +104,7 @@ async function main() {
   const binary = path.join(dir, 'hvst-runner-gw-cluster');
   let registered = false;
   try {
-    const data = verifiedBinary(await download(process.env['INPUT_BINARY-URL']), process.env['INPUT_BINARY-SHA256']);
+    const data = await loadBinary();
     fs.writeFileSync(binary, data, { mode: 0o700 });
     saveState('binary_path', binary);
     registered = true;
@@ -107,4 +130,4 @@ async function post() {
   }
 }
 
-module.exports = { main, post, verifiedBinary, download, run };
+module.exports = { main, post, verifiedBinary, download, run, loadBinary };

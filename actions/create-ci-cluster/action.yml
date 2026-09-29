@@ -26,11 +26,14 @@ inputs:
     description: Guest SSH username
     required: true
   binary-url:
-    description: HTTPS release URL for the cluster executable matching this runner architecture
-    required: true
+    description: HTTPS release URL for the cluster executable matching this runner architecture; mutually exclusive with binary-path
+    required: false
+  binary-path:
+    description: Local path to the cluster executable (relative paths resolve against the workspace); mutually exclusive with binary-url
+    required: false
   binary-sha256:
-    description: SHA-256 of the released cluster executable
-    required: true
+    description: SHA-256 of the cluster executable; required with binary-url, optional with binary-path
+    required: false
   ttl-seconds:
     description: Optional VM lifetime in seconds; gateway default is six hours
     required: false
