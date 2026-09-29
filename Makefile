@@ -2,11 +2,11 @@ BINARY ?= hvst-runner-gw
 CLIENT_BINARY ?= hvst-runner-gw-client
 OUTPUT_BIN_DIR ?= bin
 RELEASE_DIR ?= dist
-IMAGE ?= harvester-runner-gateway:dev
+IMAGE ?= bk201z/harvester-runner-gateway:dev
 DOCKER ?= docker
 BUILD_FILE ?= Dockerfile.build
 
-.PHONY: build cluster-release test test-cluster-action vet docker-build clean
+.PHONY: build cluster-release test test-cluster-action vet image push clean
 
 build:
 	$(DOCKER) build -f $(BUILD_FILE) --target binaries \

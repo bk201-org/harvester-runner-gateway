@@ -6,16 +6,18 @@ usage() {
 Usage: ./docker-run.sh CONFIG_FILE TLS_DIR HARVESTER_DIR DATA_DIR
 
 All four paths must be absolute. CONFIG_FILE is the gateway YAML config.
-TLS_DIR contains tls.crt and tls.key; HARVESTER_DIR contains kubeconfig.
+TLS_DIR contains tls.crt and tls.key, plus local-smoke-token when enabled.
+HARVESTER_DIR contains kubeconfig.
 DATA_DIR persists the SQLite database and must be writable by the image's
 runtime user. The paths inside the container match config.example.yaml.
 Run this script as the non-root host user that owns the mounted files. If you
 use sudo for Docker access, the container still runs as the original user.
 
-Build the image first with: make docker-build
+The image is pulled before replacing an existing container, and docker run
+also uses --pull=always. An initial pull failure preserves the container.
 
 Optional environment variables:
-  GATEWAY_IMAGE            Image to run (default: harvester-runner-gateway:dev)
+  GATEWAY_IMAGE            Image to run (default: bk201z/harvester-runner-gateway:dev)
   GATEWAY_CONTAINER_NAME   Container name (default: harvester-runner-gateway)
   GATEWAY_HOST_PORT        Host HTTPS port (default: 8443)
 EOF
@@ -54,7 +56,7 @@ for dir in "$tls_dir" "$harvester_dir" "$data_dir"; do
   fi
 done
 
-image=${GATEWAY_IMAGE:-harvester-runner-gateway:dev}
+image=${GATEWAY_IMAGE:-bk201z/harvester-runner-gateway:dev}
 container_name=${GATEWAY_CONTAINER_NAME:-harvester-runner-gateway}
 host_port=${GATEWAY_HOST_PORT:-8443}
 
@@ -70,7 +72,14 @@ else
   run_gid=$(id -g)
 fi
 
+# Check registry access before removing the current container.
+docker pull "$image"
+if docker container inspect "$container_name" >/dev/null 2>&1; then
+  docker container rm -f "$container_name"
+fi
+
 exec docker run -d --name "$container_name" \
+  --pull=always \
   --restart unless-stopped \
   --user "$run_uid:$run_gid" \
   --workdir / \

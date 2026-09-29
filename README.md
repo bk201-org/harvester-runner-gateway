@@ -24,27 +24,43 @@ Docker is required for the build, release, test, vet, and image targets.
 and exports them to `./bin`.
 `make cluster-release` exports release binaries and checksums to `./dist`.
 `make test`, `make test-cluster-action`, and `make vet` run in containers too.
-`make docker-build` builds the runtime image. The image defaults to a non-root
-user. Run exactly one gateway instance in v1; allocation and quota checks are
-serialized in that process.
+`make image` builds the runtime image using the `IMAGE` tag (default
+`bk201z/harvester-runner-gateway:dev`); `make push` builds and publishes that
+tag. The image defaults to a non-root user. Run exactly one gateway instance
+in v1; allocation and quota checks are serialized in that process.
 
-To run the Docker image, keep the YAML configuration and credentials outside
-the repository. Use the paths in `config.example.yaml` and create a persistent
-data directory writable by the host user running the script. Then run:
+To run the image on a remote host, publish it to a registry that host can
+access. Keep the YAML configuration and credentials outside tracked source
+files, using the paths in `config.example.yaml`. Create a persistent data
+directory writable by the host user running the script. The optional
+`deploy.sh` helper copies the files into `$HOME/runner-gateway` on the
+remote host. On that host:
 
 ```sh
-make docker-build
-./docker-run.sh /secure/path/config.yaml /secure/path/gateway-tls \
-  /secure/path/harvester /secure/path/gateway-data
+cd "$HOME/runner-gateway"
+./start.sh
 docker logs harvester-runner-gateway
 ```
 
-The TLS directory contains `tls.crt` and `tls.key`; the Harvester directory
+`deploy.sh` creates `start.sh`, `stop.sh`, and `restart.sh` in the remote work
+directory on every deployment. The deployed `start.sh` passes the config, TLS,
+Harvester, and data paths to `docker-run.sh`. It finds those files relative to
+its own location, so it can also be invoked from another directory. Run `./restart.sh` to pull and replace
+the container using the same paths, or `./stop.sh` to stop it. Both scripts
+honor `GATEWAY_CONTAINER_NAME`.
+
+`docker-run.sh` first pulls `GATEWAY_IMAGE` (default
+`bk201z/harvester-runner-gateway:dev`) before removing an existing container,
+then starts the replacement with `--pull=always` and the same persistent data
+directory. A failure in the initial pull leaves the existing container
+running; a later pull or start failure can interrupt service. The TLS
+directory contains `tls.crt` and `tls.key`, plus
+`local-smoke-token` when local smoke access is enabled; the Harvester directory
 contains `kubeconfig`. Run `./docker-run.sh --help` for image, container name,
 and host port overrides. The script runs the container as the invoking host
 user (including when invoked through sudo), so that user must be able to read
-the config, TLS key, and kubeconfig and write the SQLite directory. The script
-mounts credentials read-only and keeps the SQLite directory persistent.
+the config, TLS key, smoke token, and kubeconfig and write the SQLite
+directory. Credentials are mounted read-only.
 
 The gateway needs HTTPS access to GitHub's OIDC discovery and JWKS endpoints and
 Kubernetes API access to Harvester. Runners need HTTPS access to the gateway.
@@ -346,8 +362,22 @@ on the GitHub default branch, run it through the Actions tab or
 ### Local shell
 
 Local invocation needs a one-time, opt-in `localSmoke` credential on the
-**existing gateway**. Generate 32 random bytes as hex and store them in a
-private file readable by the gateway process, outside the repository:
+**existing gateway**. The `deploy.sh` helper creates one shared token
+for all profiles at `deploy/local-smoke-token` and syncs it to the remote
+`runner-gateway/tls/local-smoke-token`. The local `deploy/` directory holds
+profile files and generated state and is Git-ignored. Keep this token private
+and reuse it across deployments.
+
+On first deployment of a profile, `deploy.sh` also creates
+`deploy/<PROFILE>.smoke.json` for local smoke tests. It uses `GATEWAY_HOST` and
+`GATEWAY_HOST_PORT` (default 8443), the first allowed image and network from
+the `localSmoke` repository policy, the shared token path, and the local TLS
+certificate path. Existing smoke JSON is left unchanged, so edit it if you
+need another approved image or network. Generation requires yq v4 and
+jq; the file stays local.
+
+For a manual installation, generate 32 random bytes as hex in a private file
+readable by the gateway process:
 
 ```sh
 umask 077
@@ -366,8 +396,9 @@ localSmoke:
   tokenFile: /secure/path/local-smoke-token
 ```
 
-Copy the same token to a private file on your workstation. Create
-`~/.config/harvester-runner-gateway/smoke.json` with these fields, using
+For a manual setup, copy the same token to a private file on your
+workstation. Create `~/.config/harvester-runner-gateway/smoke.json` with these
+fields, using
 absolute paths and your approved image and network:
 
 ```json
@@ -394,7 +425,8 @@ its token file to rotate the credential. Then run:
 ```
 
 Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another local
-configuration. The Go test validates configuration and quota before running four
+configuration, including the generated `deploy/<PROFILE>.smoke.json`. The Go
+test validates configuration and quota before running four
 focused subtests with up to two running at once when quota allows. Each
 subtest owns one VM and cleans up independently. The test is skipped during
 normal `go test ./...` runs; running the script or setting `GATEWAY_SMOKE=1` is
