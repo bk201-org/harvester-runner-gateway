@@ -10,11 +10,19 @@ HTTPS access to the gateway. Grant the job `id-token: write`. The gateway must
 allow the repository and workflow ref in its policy. The action uses GitHub
 OIDC for both creation and post-job deletion.
 
-Build release assets with `make cluster-release`. Publish both executables and
-`SHA256SUMS` under a release tag. Supply either `binary-url` with the matching
-SHA-256 of the binary for the runner architecture, or `binary-path` with a
-local executable, such as one built earlier in the same job (`binary-sha256` is
-optional there and checked when given). The two are mutually exclusive. The
+Build release assets with `make cluster-release`. The release workflow uploads
+them, with `SHA256SUMS`, to each published GitHub release. Choose the binary
+source with one of:
+
+- Nothing (default): the action downloads the latest release of the repository
+  that hosts the action for the runner architecture (linux amd64 or arm64) and
+  verifies it against the release `SHA256SUMS`. Pin the action to a release tag
+  and set `binary-url` if the binary must match the action version.
+- `binary-url` with the matching `binary-sha256` for the runner architecture.
+- `binary-path` with a local executable, such as one built earlier in the same
+  job (`binary-sha256` is optional there and checked when given).
+
+`binary-url` and `binary-path` are mutually exclusive. The
 [example workflow](../../examples/cluster-workflow.yml) contains placeholders
 for the future GitHub repository, release tag, and digest, and
 [action test workflow](../../.github/workflows/test-action-create-ci-cluster.yml)

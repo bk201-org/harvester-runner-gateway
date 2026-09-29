@@ -57,7 +57,8 @@ admin credentials for a cluster that no longer exists after the job.
 
 The action runs the `create-k3s` command of the `hvst-runner-gw-cluster`
 executable, so the release binary and its checksum are the same as for
-`create-ci-cluster`. See that README for building, publishing, and local
+`create-ci-cluster`. Without `binary-url` or `binary-path`, it downloads the
+latest release binary as described there. See that README for building, publishing, and local
 testing. This action has no HA or embedded-etcd support and takes no extra k3s
 arguments.
 

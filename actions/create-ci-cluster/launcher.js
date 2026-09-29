@@ -29,12 +29,64 @@ function readLocalBinary(file, base) {
   return fs.readFileSync(resolved);
 }
 
-async function loadBinary(env = process.env) {
+const releaseArch = { x64: 'amd64', arm64: 'arm64' };
+
+function latestTag(base, repo) {
+  const target = new URL(`${base}/${repo}/releases/latest`);
+  return new Promise((resolve, reject) => {
+    const request = https.get(target, { timeout: 30000 }, response => {
+      response.resume();
+      const location = response.headers.location;
+      if (![301, 302, 303, 307, 308].includes(response.statusCode) || !location) {
+        return reject(new Error(`no published release found for ${repo}`));
+      }
+      let tag = '';
+      try {
+        const match = /\/releases\/tag\/([^/]+)$/.exec(new URL(location, target).pathname);
+        if (match) tag = decodeURIComponent(match[1]);
+      } catch { /* rejected below */ }
+      if (!/^[A-Za-z0-9._+-]+$/.test(tag)) {
+        return reject(new Error(`unexpected latest release location for ${repo}`));
+      }
+      resolve(tag);
+    });
+    request.on('timeout', () => request.destroy(new Error('latest release lookup timed out')));
+    request.on('error', reject);
+  });
+}
+
+function checksumFor(sums, name) {
+  for (const line of sums.split(/\r?\n/)) {
+    const match = /^([a-f0-9]{64}) [ *](.+)$/i.exec(line);
+    if (match && match[2] === name) return match[1];
+  }
+  throw new Error(`SHA256SUMS has no entry for ${name}`);
+}
+
+async function loadLatestRelease(env, deps) {
+  const repo = env.GITHUB_ACTION_REPOSITORY || env.GITHUB_REPOSITORY || '';
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    throw new Error('one of binary-url or binary-path is required outside a GitHub Actions run');
+  }
+  const arch = releaseArch[deps.arch];
+  if (deps.platform !== 'linux' || !arch) throw new Error(`no release binary for ${deps.platform}/${deps.arch}`);
+  const base = (env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/+$/, '');
+  const tag = await deps.latestTag(base, repo);
+  const name = `hvst-runner-gw-cluster-linux-${arch}`;
+  const releaseBase = `${base}/${repo}/releases/download/${encodeURIComponent(tag)}`;
+  console.log(`Downloading ${name} from ${repo} release ${tag}`);
+  const sha = env['INPUT_BINARY-SHA256'] || checksumFor((await deps.download(`${releaseBase}/SHA256SUMS`)).toString('utf8'), name);
+  return verifiedBinary(await deps.download(`${releaseBase}/${name}`), sha);
+}
+
+async function loadBinary(env = process.env, deps = {}) {
   const url = env['INPUT_BINARY-URL'] || '';
   const file = env['INPUT_BINARY-PATH'] || '';
   const sha = env['INPUT_BINARY-SHA256'] || '';
   if (url && file) throw new Error('binary-url and binary-path are mutually exclusive');
-  if (!url && !file) throw new Error('one of binary-url or binary-path is required');
+  if (!url && !file) {
+    return loadLatestRelease(env, { download, latestTag, arch: process.arch, platform: process.platform, ...deps });
+  }
   if (url) {
     if (!/^[a-f0-9]{64}$/i.test(sha)) throw new Error('binary-sha256 must be 64 hexadecimal characters');
     return verifiedBinary(await download(url), sha);
@@ -131,4 +183,4 @@ async function post() {
   }
 }
 
-module.exports = { main, post, verifiedBinary, download, run, loadBinary };
+module.exports = { main, post, verifiedBinary, download, run, loadBinary, checksumFor };

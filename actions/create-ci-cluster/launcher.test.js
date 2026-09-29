@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { loadBinary, main, post, verifiedBinary } = require('./launcher');
+const { checksumFor, loadBinary, main, post, verifiedBinary } = require('./launcher');
 
 test('loadBinary reads a local path, optionally verifying the checksum', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-path-'));
@@ -23,6 +23,44 @@ test('loadBinary reads a local path, optionally verifying the checksum', async (
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('loadBinary downloads the latest release when no url or path is given', async () => {
+  const data = Buffer.from('release executable');
+  const sha = crypto.createHash('sha256').update(data).digest('hex');
+  const requested = [];
+  const deps = {
+    arch: 'x64',
+    platform: 'linux',
+    latestTag: async (base, repo) => { requested.push(`${base} ${repo}`); return 'v1.2.3'; },
+    download: async url => {
+      requested.push(url);
+      if (url.endsWith('/SHA256SUMS')) {
+        return Buffer.from(`${'0'.repeat(64)}  hvst-runner-gw-linux-amd64\n${sha}  hvst-runner-gw-cluster-linux-amd64\n`);
+      }
+      return data;
+    },
+  };
+  const env = { GITHUB_ACTION_REPOSITORY: 'owner/repo' };
+  assert.deepEqual(await loadBinary(env, deps), data);
+  assert.deepEqual(requested, [
+    'https://github.com owner/repo',
+    'https://github.com/owner/repo/releases/download/v1.2.3/SHA256SUMS',
+    'https://github.com/owner/repo/releases/download/v1.2.3/hvst-runner-gw-cluster-linux-amd64',
+  ]);
+  await assert.rejects(loadBinary({ ...env, 'INPUT_BINARY-SHA256': '1'.repeat(64) }, deps), /verification/);
+  await assert.rejects(loadBinary(env, { ...deps, arch: 'ia32' }), /no release binary/);
+  await assert.rejects(
+    loadBinary(env, { ...deps, download: async url => url.endsWith('/SHA256SUMS') ? Buffer.from('') : data }),
+    /no entry/,
+  );
+});
+
+test('checksumFor finds text and binary mode entries', () => {
+  const sums = `${'a'.repeat(64)}  one\n${'b'.repeat(64)} *two\n`;
+  assert.equal(checksumFor(sums, 'one'), 'a'.repeat(64));
+  assert.equal(checksumFor(sums, 'two'), 'b'.repeat(64));
+  assert.throws(() => checksumFor(sums, 'three'), /no entry/);
 });
 
 test('loadBinary validates input combinations', async () => {
