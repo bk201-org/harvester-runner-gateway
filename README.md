@@ -1,40 +1,27 @@
 # Harvester Runner Gateway
 
-An HTTPS API for GitHub Actions jobs and individual developers to create and manage short-lived Harvester
-VMs and volumes. The gateway is a standalone Go service holding the Harvester
-kubeconfig. Jobs authenticate with GitHub OIDC and never receive that kubeconfig
-or a GitHub PAT. The first target is Harvester v1.7.3.
+An HTTPS API for GitHub Actions jobs and developers to create short-lived Harvester VMs and volumes. The standalone Go gateway holds the Harvester kubeconfig; jobs authenticate with GitHub OIDC and never receive the kubeconfig or a GitHub PAT. The first target is Harvester v1.7.3.
 
 ## Build and run
 
-Copy `config.example.yaml` to a protected location and set the TLS certificate,
-kubeconfig, numeric GitHub repository ID, namespace, workflow policy, Harvester
-resource names, size limits, N/M quotas, ID prefixes, and an absolute `database.path`.
-Create a persistent directory writable by the gateway user for the SQLite
-database. Keep that directory across container or host restarts; the gateway
-creates the database file and its WAL files there. Then run:
+1. Copy `config.example.yaml` to a protected location. Set TLS files, kubeconfig, numeric GitHub repository ID, namespace, workflow policy, Harvester resources, size limits, N/M quotas, ID prefixes, and an absolute `database.path`.
+2. Create a persistent directory writable by the gateway user for the SQLite database and its WAL files. Keep it across restarts.
+3. Build and start:
 
 ```sh
 make build
 ./bin/hvst-runner-gw --config /secure/path/config.yaml
 ```
 
-Docker is required for the build, release, test, vet, and image targets.
-`make build` builds Linux server and client executables in `Dockerfile.build`
-and exports them to `./bin`.
-`make cluster-release` exports release binaries and checksums to `./dist`.
-`make test`, `make test-cluster-action`, and `make vet` run in containers too.
-`make image` builds the runtime image using the `IMAGE` tag (default
-`bk201z/harvester-runner-gateway:dev`); `make push` builds and publishes that
-tag. The image defaults to a non-root user. Run exactly one gateway instance
-in v1; allocation and quota checks are serialized in that process.
+- Docker is required for the build, release, test, vet, and image targets. `make build` exports Linux server and client binaries to `./bin`; `make cluster-release` exports binaries and checksums to `./dist`.
+- `make image` builds the runtime image with `IMAGE` (default `bk201z/harvester-runner-gateway:dev`); `make push` builds and publishes it. The image runs as a non-root user by default.
+- Run exactly one gateway instance in v1. Allocation and quota checks are serialized within that process.
 
-To run the image on a remote host, publish it to a registry that host can
-access. Keep the YAML configuration and credentials outside tracked source
-files, using the paths in `config.example.yaml`. Create a persistent data
-directory writable by the host user running the script. The optional
-`deploy.sh` helper copies the files into `$HOME/runner-gateway` on the
-remote host. On that host:
+### Remote host
+
+Publish the image to a registry the host can access. Keep config and credentials outside tracked source files at the paths in `config.example.yaml`; create a persistent data directory writable by the host user.
+
+The optional `deploy.sh` copies files to `$HOME/runner-gateway` on the remote host and creates `start.sh`, `stop.sh`, and `restart.sh` there on every deployment. On that host:
 
 ```sh
 cd "$HOME/runner-gateway"
@@ -42,47 +29,23 @@ cd "$HOME/runner-gateway"
 docker logs harvester-runner-gateway
 ```
 
-`deploy.sh` creates `start.sh`, `stop.sh`, and `restart.sh` in the remote work
-directory on every deployment. The deployed `start.sh` passes the config, TLS,
-Harvester, and data paths to `docker-run.sh`. It finds those files relative to
-its own location, so it can also be invoked from another directory. Run `./restart.sh` to pull and replace
-the container using the same paths, or `./stop.sh` to stop it. Both scripts
-honor `GATEWAY_CONTAINER_NAME`.
+- `start.sh` resolves config, TLS, Harvester, and data paths relative to its own location. `restart.sh` pulls and replaces the container; `stop.sh` stops it. Both honor `GATEWAY_CONTAINER_NAME`.
+- `docker-run.sh` pulls `GATEWAY_IMAGE` before removing the existing container, then starts the replacement with `--pull=always` and the same data directory. An initial pull failure leaves the container running; a later pull or start failure can interrupt service.
+- The TLS directory contains `tls.crt`, `tls.key`, and optionally `local-smoke-token`. The Harvester directory contains `kubeconfig`. Credentials are mounted read-only.
+- The container runs as the invoking host user, including through sudo. That user needs read access to config, TLS key, smoke token, and kubeconfig, plus write access to SQLite storage.
+- Run `./docker-run.sh --help` for image, container name, and host port overrides.
 
-`docker-run.sh` first pulls `GATEWAY_IMAGE` (default
-`bk201z/harvester-runner-gateway:dev`) before removing an existing container,
-then starts the replacement with `--pull=always` and the same persistent data
-directory. A failure in the initial pull leaves the existing container
-running; a later pull or start failure can interrupt service. The TLS
-directory contains `tls.crt` and `tls.key`, plus
-`local-smoke-token` when local smoke access is enabled; the Harvester directory
-contains `kubeconfig`. Run `./docker-run.sh --help` for image, container name,
-and host port overrides. The script runs the container as the invoking host
-user (including when invoked through sudo), so that user must be able to read
-the config, TLS key, smoke token, and kubeconfig and write the SQLite
-directory. Credentials are mounted read-only.
+### Network and Harvester access
 
-The gateway needs HTTPS access to GitHub's OIDC discovery and JWKS endpoints and
-Kubernetes API access to Harvester. Runners need HTTPS access to the gateway.
+- The gateway needs HTTPS access to GitHub OIDC discovery and JWKS, plus Kubernetes API access to Harvester. Runners need HTTPS access to the gateway.
+- The kubeconfig identity needs namespace read; VM and VMI get/list; VM create/update/delete; PVC get/list/create/delete; Secret get/list/create/update/delete; image, network, and storage class get; and KubeVirt virtualmachine start/stop/restart/addvolume/removevolume subresource update.
+- Bind rights to the configured namespaces and, where possible, configured image and network namespaces. The storage class must support ReadWriteMany block PVCs for live hotplug.
 
-The kubeconfig identity needs namespace read, VM and VMI get/list, VM
-create/update/delete, PVC get/list/create/delete, Secret get/list/create/
-update/delete, image and network get, storage class get, and KubeVirt virtualmachine start/stop/restart/addvolume/
-removevolume subresource update permissions. The selected storage class must
-support ReadWriteMany block PVCs for live hotplug. Bind these rights only in the
-configured namespaces and for the configured image/network namespaces where
-possible. The TLS certificate must match the hostname used by workflows.
+### TLS certificate
 
-### Generate the TLS certificate and key
+Set `tls.certFile` and `tls.keyFile` to a PEM server certificate and matching unencrypted private key. The gateway does not generate them. For production, use a CA trusted by runners and store the files outside this repository. The certificate must match the hostname used by workflows.
 
-`tls.certFile` and `tls.keyFile` are paths to a PEM-encoded server certificate
-and its matching, unencrypted private key. The gateway does not create them.
-For production, obtain a certificate for the gateway hostname from a CA trusted
-by the runners, and put the certificate and key in a protected location outside
-this repository.
-
-For a local test, replace the hostname and directory below, then run this on
-the gateway host (OpenSSL 1.1.1 or newer):
+For a local test, replace the hostname and directory below, then run this on the gateway host with OpenSSL 1.1.1 or newer:
 
 ```sh
 GATEWAY_HOST=gateway.example.com
@@ -97,39 +60,22 @@ chmod 600 "$TLS_DIR/tls.key"
 openssl x509 -in "$TLS_DIR/tls.crt" -noout -dates -ext subjectAltName
 ```
 
-Set `tls.certFile` to the resulting `tls.crt` path and `tls.keyFile` to the
-`tls.key` path, or mount both at the example `/run/secrets/gateway/` paths.
-The service user must be able to read them. For an IP address, use
-`subjectAltName=IP:<address>` instead of `DNS:<hostname>`. The local test
-certificate is self-signed, so each runner must trust it before its HTTPS
-client can call the gateway. Do not commit the private key or disable TLS
-verification.
+- Point `tls.certFile` and `tls.keyFile` to these files, or mount them at the example `/run/secrets/gateway/` paths. The service user must be able to read them.
+- For an IP address, use `subjectAltName=IP:<address>` instead of `DNS:<hostname>`.
+- Runners must trust a self-signed certificate. Keep the private key out of version control and leave TLS verification enabled.
 
 ## Logging
 
-The server writes structured JSON logs to stdout. Startup, preflight, allocation
-recovery, expiry cleanup, resource mutations, shutdown, and every HTTP response
-are logged. Request completion entries include the method, URL path, status,
-response size, and duration. Client errors use `WARN`; server and Harvester
-errors use `ERROR`. Resource events include the namespace, resource ID, and
-GitHub repository/run ownership fields.
-
-Authorization headers, request bodies, SSH public keys, and cloud-init data
-are never logged. Collect stdout with the service manager or container runtime
-used to run the gateway. The CLI and live smoke test emit the same style of
-per-call JSON logs to stderr.
+- The server writes JSON logs to stdout for startup, preflight, recovery, cleanup, mutations, shutdown, and HTTP responses. Response entries include method, path, status, size, and duration.
+- Client errors use `WARN`; server and Harvester errors use `ERROR`. Resource events include namespace, resource ID, and GitHub ownership fields.
+- Authorization headers, request bodies, SSH public keys, and cloud-init data are not logged. Collect stdout with the service manager or container runtime.
+- The CLI and live smoke test write per-call JSON logs to stderr.
 
 ## Client CLI
 
-`make build` builds the server and `bin/hvst-runner-gw-client`. The client uses HTTPS and
-supports every gateway API operation without
-needing `curl` or a Harvester kubeconfig. It can also be installed directly from
-this checkout with `go install ./cmd/hvst-runner-gw-client`. Go programs can
-import `github.com/bk201-org/harvester-runner-gateway/client` for typed VM,
-volume, quota, health, readiness, and lifecycle operations.
+`make build` produces `bin/hvst-runner-gw-client`; `go install ./cmd/hvst-runner-gw-client` installs it from this checkout. It uses HTTPS and needs no Harvester kubeconfig. Go programs can import `github.com/bk201-org/harvester-runner-gateway/client`.
 
-For operator smoke testing, configure the gateway's optional `localSmoke` credential as
-[described below](#local-shell), then point the client at the same token file:
+For an operator smoke check, configure [local smoke access](#local-shell) and use the same token file:
 
 ```sh
 export GATEWAY_URL=https://gateway.example.internal:8443
@@ -148,89 +94,55 @@ client=./bin/hvst-runner-gw-client
 "$client" vm list
 ```
 
-Save the returned `id` for subsequent commands. Successful JSON responses go to
-stdout with a trailing newline, so scripts can extract fields with `jq`.
-Commands whose API response has no body produce no output on success.
+Save the returned `id` for later commands. Successful JSON responses end with a newline for tools such as `jq`; commands with no response body produce no output.
 
 | Command | Purpose |
 | --- | --- |
-| `health` | Check process health; no authentication |
-| `ready` | Check Harvester reachability; no authentication |
+| `health`, `ready` | Check process health or Harvester reachability; no authentication |
 | `quota` | Get repository usage and limits |
 | `vm create [flags]` | Create a VM and wait for a running VMI with a usable IP |
-| `vm list` | List caller-owned VMs |
-| `vm get ID` | Get VM status |
+| `vm list`, `vm get ID` | List caller-owned VMs or get status |
 | `vm delete ID` | Request deletion of the VM and its attached volumes |
-| `vm power ID on` / `vm power ID off` | Set desired power state |
-| `vm reboot ID` | Request reboot |
-| `vm attach ID VOLUME_ID` | Request live volume attachment |
-| `vm detach ID VOLUME_ID` | Request volume detachment |
+| `vm power ID on` / `vm power ID off`, `vm reboot ID` | Change power state or request reboot |
+| `vm attach ID VOLUME_ID`, `vm detach ID VOLUME_ID` | Attach or detach a volume |
 | `volume create --size 10Gi` | Create an independent volume |
-| `volume list` | List caller-owned independent volumes |
-| `volume get ID` | Get volume status |
-| `volume delete ID` | Request volume deletion |
+| `volume list`, `volume get ID`, `volume delete ID` | List, inspect, or delete owned volumes |
 
-VM creation requires `--image`, `--network`, `--cpu`, `--memory`,
-`--boot-disk-size`. Optional inputs are repeatable
-`--ssh-public-key-file` (up to 10 keys), `--user-data-file` (cloud-config up to
-64 KiB), and `--ttl-seconds`. By default, the command polls every ten seconds
-for up to five minutes and prints the final status only after `ready` is true.
-Use `--wait-timeout` or `GATEWAY_VM_WAIT_TIMEOUT` to change that limit, or
-`--no-wait` to return the initial asynchronous API response. The normal
-`--timeout` remains the limit for each HTTP request. A readiness timeout leaves
-the VM allocated. Use `--no-wait` and save the returned ID when the caller
-must be able to inspect or delete the VM after a wait timeout. Volume creation
-requires `--size` and also accepts `--ttl-seconds`. An omitted TTL uses the
-server's six-hour default; an explicit TTL must be 1–86400 seconds.
+- VM creation requires `--image`, `--network`, `--cpu`, `--memory`, and `--boot-disk-size`. Optional inputs: repeatable `--ssh-public-key-file` (up to 10 keys), `--user-data-file` (cloud-config up to 64 KiB), and `--ttl-seconds`.
+- By default, `vm create` polls every ten seconds for up to five minutes and prints status once `ready` is true. Change the wait with `--wait-timeout` or `GATEWAY_VM_WAIT_TIMEOUT`; `--no-wait` returns the initial response. `--timeout` still limits each HTTP request.
+- A readiness timeout leaves the VM allocated. Use `--no-wait` and save the ID when you need to inspect or delete it after a timeout.
+- Volume creation requires `--size` and accepts `--ttl-seconds`. An omitted TTL uses the six-hour server default; an explicit TTL must be 1–86400 seconds.
 
-Global flags must precede the command, for example:
+Global flags precede the command:
 
 ```sh
 "$client" --url https://gateway.example.internal:8443 --timeout 45s vm get "$vm_id"
 "$client" vm create --help
 ```
 
-| Global flag | Environment variable | Default |
+| Flag | Environment variable | Default |
 | --- | --- | --- |
-| `--url` | `GATEWAY_URL` | Required HTTPS URL; optional base-path prefix |
+| `--url` | `GATEWAY_URL` | Required HTTPS URL; optional base path |
 | `--token-file` | `GATEWAY_TOKEN_FILE` | Unset |
 | `--ca-cert` | `GATEWAY_CA_CERT` | System trust only |
 | `--audience` | `GATEWAY_AUDIENCE` | `api://harvester-runner-gateway` |
 | `--timeout` | `GATEWAY_TIMEOUT` | `30s` per HTTP request |
 
-Flags override their corresponding environment variables. Authentication uses
-the configured token file first, then `GATEWAY_TOKEN`, then automatic GitHub
-Actions OIDC when `GITHUB_ACTIONS=true`. A configured credential that cannot be
-read or is malformed fails without falling back. Tokens are never passed as CLI
-arguments or printed. The CLI does not save credentials or profiles. Cluster commands save private resource state and SSH files. The
-additional gateway CA does not change trust for GitHub OIDC requests. TLS
-verification stays enabled, and redirects are rejected.
-
-In GitHub Actions, grant `id-token: write` and set `GATEWAY_URL`, optionally
-`GATEWAY_AUDIENCE` and `GATEWAY_CA_CERT`. The client obtains a fresh OIDC token
-for each invocation using `ACTIONS_ID_TOKEN_REQUEST_URL` and
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The [example workflow](examples/workflow.yml)
-builds the client, creates a VM, reads its status, and requests cleanup.
-
-The client exits with `0` on success, `1` for HTTP, authentication, or transport
-failures, and `2` for invalid usage or local configuration. Structured request
-logs and errors go to stderr; errors include the HTTP status and gateway error
-code/message when available.
-Creation and action commands return as soon as the gateway accepts the request;
-poll `vm get` or `volume get` to observe completion. Mutations are not
-automatically retried. Deleting an absent resource remains an HTTP 404 failure.
+- Flags override environment variables. Authentication checks the token file, then `GATEWAY_TOKEN`, then automatic GitHub Actions OIDC when `GITHUB_ACTIONS=true`. An unreadable or malformed configured credential fails without fallback.
+- Tokens are never CLI arguments or printed. The CLI saves no credentials or profiles; cluster commands save private resource state and SSH files. The extra gateway CA does not affect GitHub OIDC trust. TLS verification remains enabled and redirects are rejected.
+- In GitHub Actions, grant `id-token: write` and set `GATEWAY_URL`; set `GATEWAY_AUDIENCE` or `GATEWAY_CA_CERT` if needed. See the [example workflow](examples/workflow.yml).
+- The client requests a fresh OIDC token for each invocation through `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
+- Exit codes: `0` success, `1` HTTP/authentication/transport failure, `2` invalid usage or local configuration. Errors and request logs go to stderr; errors include HTTP status and gateway code/message when available.
+- Creation and action commands return when the gateway accepts a request. Poll `vm get` or `volume get` for completion. Mutations are not automatically retried, and deleting an absent resource returns HTTP 404.
 
 ## On-demand developer clusters
 
-Install the `hvst-runner-gw-client` release for Linux or macOS (amd64
-or arm64) and verify it with the release `SHA256SUMS`. OpenSSH client tools
-(`ssh` and `ssh-keygen`) are required. Your workstation must reach the gateway
-and VM network, for example through your existing VPN.
+Install the Linux or macOS (amd64 or arm64) client release and verify its `SHA256SUMS`. You also need `ssh`, `ssh-keygen`, and network access to the gateway and VM network, such as through a VPN.
 
-A gateway administrator enables individual access by adding `developers` to
-the gateway config. Each developer has a stable ID, one repository policy, and
-a **different** token. Generate each token with `umask 077` and
-`openssl rand -hex 32 > /secure/path/alice.token`, then configure:
+### Developer access
+
+- An administrator adds `developers` to the gateway config. Each developer has a stable ID, one repository policy, and a unique token.
+- Generate a token with `umask 077` and `openssl rand -hex 32 > /secure/path/alice.token`. Token files must be private regular files (`chmod 600`) with 64 hex characters and an optional trailing newline.
 
 ```yaml
 developers:
@@ -239,38 +151,20 @@ developers:
     tokenFile: /run/secrets/gateway/developers/alice.token
 ```
 
-Token files must be private regular files (`chmod 600`) containing 64 hex
-characters, with an optional trailing newline. With `docker-run.sh`, put them
-under the mounted TLS directory's `developers/` subdirectory.
+- With `docker-run.sh`, store tokens under the mounted TLS directory's `developers/` subdirectory.
+- `deploy.sh` creates missing tokens at `deploy/developers/<id>.token`, reuses them across profiles, and uploads them to `runner-gateway/tls/developers/<id>.token`.
+- The helper requires `tokenFile: /run/secrets/gateway/developers/<id>.token`, yq v4, and jq. It validates credentials before connecting and sets private permissions. It does not restart the gateway or distribute tokens.
+- For manual setup, distribute each token privately. To rotate a helper-managed token, replace its local file and redeploy. To revoke access, remove the developer entry and redeploy. Restart the gateway after either change.
+- Never reassign a former developer's ID: ownership survives token rotation. Developer resources use `dev-<id>` and are isolated from other developers, GitHub runs, and local smoke resources. Developers and CI share their repository policy and quota; revoked developers' resources expire normally.
 
-`deploy.sh` reads the profile's `developers` entries, generates missing tokens at
-`deploy/developers/<id>.token`, and reuses those files across deployments and
-profiles. It requires `tokenFile: /run/secrets/gateway/developers/<id>.token`
-and uploads each configured token to `runner-gateway/tls/developers/<id>.token`.
-The helper requires yq v4 and jq, rejects malformed or duplicate credentials
-before connecting to the remote host, and sets private file permissions. It
-copies files without restarting the gateway or distributing tokens to users.
+### Create and manage a cluster
 
-For a manual setup, generate each token with `umask 077` and
-`openssl rand -hex 32 > /secure/path/alice.token`. Distribute each token privately
-to its developer. To rotate a helper-managed token, replace its local file and
-redeploy. To revoke access, remove the developer entry and redeploy. Restart the
-gateway after either change. Keep IDs stable and never reassign a former
-developer's ID: ownership survives token rotation.
-
-Developer ownership uses `dev-<id>` and is isolated from other developers,
-GitHub runs, and local smoke resources. Repository policies and quotas apply
-to developers and CI, which share the repository's quota. Resources owned by
-revoked developers expire normally.
-
-Copy [examples/debug-cluster.yaml](examples/debug-cluster.yaml), fill in the
-failed job's resolved provisioning inputs, and run:
+Copy [examples/debug-cluster.yaml](examples/debug-cluster.yaml), fill in the failed job's provisioning inputs, and run:
 
 ```sh
 export GATEWAY_URL=https://gateway.example.internal:8443
 export GATEWAY_TOKEN_FILE="$HOME/.config/harvester-gateway/token"
-# Optional, for a gateway using your private CA:
-export GATEWAY_CA_CERT=/secure/path/gateway-ca.pem
+export GATEWAY_CA_CERT=/secure/path/gateway-ca.pem # optional for a private CA
 
 hvst-runner-gw-client cluster create \
   --config ./debug-cluster.yaml --state-dir ./debug-cluster
@@ -279,167 +173,61 @@ ssh -F ./debug-cluster/ssh_config <vm-id>
 hvst-runner-gw-client cluster delete --state-dir ./debug-cluster
 ```
 
-The provisioning YAML uses the action input names and rejects unknown fields.
-Required fields are `vm-count`, `image`, `network`, `cpu`, `memory`,
-`boot-disk-size`, and `username`. Optional fields are `user-data` (inline
-cloud-config), `ttl-seconds`, and `wait-timeout-seconds` (default 600).
-Connection settings and credentials use the global client flags or
-environment variables. Local cluster commands never request GitHub OIDC.
-
-JSON output includes VM status, IPs, expiry times, SSH configuration, and ready-to-copy
-SSH commands. Check out the failed test revision and execute its setup and tests
-manually. This creates fresh VMs, not a snapshot of a failed job. Running VMs
-with an IP are considered ready; SSH and cloud-init may still be starting.
-Local k3s installation and automatic test execution are not included.
-
-The state directory must not already exist when creating a cluster. It contains
-private SSH material and a saved provisioning configuration: keep it out of
-version control and artifacts. Operations lock the directory, bind it to the
-original gateway URL, and save each returned VM ID atomically. Always use the
-same developer identity for status and deletion; another identity cannot see
-the VMs. A different identity's 404 response cannot distinguish an inaccessible
-VM from a deleted VM.
-
-Failures and interruptions keep recorded VMs and SSH files for inspection.
-Run `cluster status` to refresh addresses and the SSH config, then retry cleanup
-with `cluster delete`. Creation is never automatically retried. If a create
-response was lost, use `vm list` to locate unrecorded resources and
-`vm delete ID` to remove them. Cluster deletion only covers recorded IDs.
-
-Deletion waits for recorded VMs to disappear (default ten minutes, configurable
-with `--wait-timeout`). Failures preserve keys and state. Successful deletion
-removes the keys and leaves a small state tombstone so repeated deletion is safe;
-the directory can then be removed manually. Clusters otherwise expire after six
-hours by default, up to 24 hours. The gateway performs expiry cleanup even when
-your workstation is offline.
+- The YAML uses action input names and rejects unknown fields. Required fields: `vm-count`, `image`, `network`, `cpu`, `memory`, `boot-disk-size`, `username`. Optional fields: `user-data` (inline cloud-config), `ttl-seconds`, `wait-timeout-seconds` (default 600).
+- Connection and credentials use global flags or environment variables. Local cluster commands never request GitHub OIDC.
+- JSON output includes VM status, IPs, expiry, SSH config, and SSH commands. Check out the failed test revision and run its setup and tests manually.
+- These are fresh VMs, not snapshots. An IP does not mean SSH or cloud-init is ready. Local k3s installation and automatic test execution are not included.
+- The state directory must not exist before creation. It contains private SSH material and saved configuration: exclude it from version control and artifacts. Commands lock it, bind it to the original gateway URL, and save returned VM IDs atomically.
+- Use the same developer identity for status and deletion. Another identity cannot see the VMs, and a 404 does not distinguish an inaccessible VM from a deleted one.
+- On interruption, run `cluster status` to refresh addresses and SSH config, then retry `cluster delete`. Creation is never retried automatically. If a create response was lost, use `vm list` to find unrecorded resources and `vm delete ID` to remove them; cluster deletion covers recorded IDs only.
+- Deletion waits for recorded VMs to disappear (default ten minutes; change with `--wait-timeout`). Failure preserves keys and state.
+- Success removes keys and leaves a small tombstone so repeated deletion is safe; you can then remove the directory. Otherwise, clusters expire after six hours by default, up to 24 hours, even while your workstation is offline.
 
 ## Authentication
 
-Workflow API calls use `Authorization: Bearer <GitHub OIDC JWT>`. Workflow jobs
-grant `id-token: write` and request the audience configured under
-`oidc.audience`. An optional, separately configured local smoke token is accepted
-only for the repository policy named under `localSmoke.repositoryID`.
-For OIDC, the gateway verifies the token's issuer, signature, audience, time claims,
-repository ID, `self-hosted` runner environment, workflow ref, and event name.
-Workflow refs and event names match exactly; no wildcard policy is supported.
-Only GitHub.com is the default issuer. Jobs in the same repository/run ID/run
-attempt share resources. All runs and attempts of a repository share its quota.
-OIDC does not identify an exact runner VM.
-
-See [examples/workflow.yml](examples/workflow.yml) for token retrieval and a
-create/status/delete sequence. Keep the token out of logs and artifacts.
+- Workflows send `Authorization: Bearer <GitHub OIDC JWT>`, grant `id-token: write`, and request the configured `oidc.audience`.
+- The gateway verifies issuer, signature, audience, time claims, repository ID, `self-hosted` runner environment, workflow ref, and event name. Refs and event names match exactly; wildcard policies are unsupported. GitHub.com is the default issuer.
+- Jobs with the same repository, run ID, and attempt share resources. All runs and attempts in a repository share its quota. OIDC does not identify an exact runner VM.
+- An optional local smoke token is accepted only for `localSmoke.repositoryID`.
+- See [examples/workflow.yml](examples/workflow.yml) for token retrieval and create/status/delete. Keep tokens out of logs and artifacts.
 
 ## API
 
-The [OpenAPI specification](openapi.yaml) defines all endpoints. Main routes:
+The [OpenAPI specification](openapi.yaml) lists every endpoint. See [ARCHITECTURE.md](ARCHITECTURE.md) for ownership, VM status, allocation, quotas, and cleanup.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/v1/quota` | Active N/M usage and limits |
-| POST, GET | `/v1/vms` | Create or list run-owned VMs |
+| GET | `/v1/quota` | Repository usage and limits |
+| POST, GET | `/v1/vms` | Create or list VMs |
 | GET, DELETE | `/v1/vms/{id}` | Status or delete |
-| PUT | `/v1/vms/{id}/power` | Desired `on` or `off` state |
-| POST | `/v1/vms/{id}/reboot` | Reboot a running VM |
-| PUT, DELETE | `/v1/vms/{id}/volumes/{volumeID}` | Live attach or detach |
-| POST, GET | `/v1/volumes` | Create or list run-owned volumes |
+| PUT | `/v1/vms/{id}/power` | Set `on` or `off` |
+| POST | `/v1/vms/{id}/reboot` | Reboot |
+| PUT, DELETE | `/v1/vms/{id}/volumes/{volumeID}` | Attach or detach |
+| POST, GET | `/v1/volumes` | Create or list volumes |
 | GET, DELETE | `/v1/volumes/{id}` | Status or delete |
 
-Every successful POST create call allocates a new resource. Repeating a create
-request can create another resource, so save the returned ID before polling or
-deleting. If a create response is lost, list run-owned resources before trying
-again; an unknown resource will otherwise remain until expiry cleanup.
-VM IDs use `<vmPrefix><hex>` and independent volume IDs use
-`<volumePrefix><hex>`. The default prefixes are `ci-vm-` and `ci-vol-`, so
-the first IDs are `ci-vm-00000001` and `ci-vol-00000001`. Each kind has one
-gateway-wide counter across repositories and namespaces. Numbers are lowercase
-hex with at least eight digits. Configure distinct, lowercase DNS-safe prefixes
-ending in `-` at the top level of the YAML file. VM dependencies are named
-`<id>-root` and `<id>-init`.
-Create returns 201 while Kubernetes provisioning is still in progress;
-API clients poll GET for status. The bundled CLI performs that polling for VM
-creation unless `--no-wait` is set. A VM status is `ready` when its VMI is
-Running and `nic-1` reports a usable, non-link-local IPv4 or IPv6 address.
-Approved images on the Multus bridge network must run QEMU Guest Agent for
-reliable guest IP reporting. Reboot is not automatically retried by the gateway.
-
-VM requests accept approved image/network names, CPU, memory, bootDiskSize,
-optional `sshPublicKeys`, optional `userData` in cloud-config format, and
-optional `ttlSeconds`. The SSH keys are inserted for the configured default
-guest user. Volume requests accept `size` and optional `ttlSeconds`. Volume
-attachments require a running VM and a Bound volume; live hotplug uses SCSI.
-Only resources created by this gateway for the authenticated run attempt, developer, or smoke identity can be managed.
-Repository, run, and attempt remain ownership labels. GitHub OIDC resources
-also carry the exact verified workflow ref in a `runner-gw-workflow-ref`
-annotation; local smoke resources have no workflow ref annotation.
-An attached volume must be detached before an explicit delete.
-
-`maxActiveVMs` counts VMs, including their boot disks. `maxActiveVolumes` counts
-only independent volumes created through `/v1/volumes`. Provisioning and
-deleting objects count until their Kubernetes objects disappear. A 409 response
-with code `quota_exceeded` indicates that a limit is reached. Policy also caps
-CPU, memory, boot disk size, and individual volume size; those size caps are
-separate from the N/M quota structure so quota dimensions can grow later.
-N/M limits apply per repository across all its workflow runs and attempts.
-Use a Kubernetes ResourceQuota for a cluster-enforced namespace-wide cap.
-
-Allocation counters and an append-only reservation history live in the local
-SQLite database at `database.path`. Each number is committed before the
-Kubernetes create call, so failed or interrupted creates can leave gaps. A
-retained database prevents reuse of reserved numbers across restarts, even
-after resources are deleted. The database records IDs, owner, namespace, kind,
-sequence, reservation time, and the configured prefixes; it does not store
-request bodies or credentials.
-A reservation does not prove that resource creation succeeded.
-
-At startup the gateway scans surviving VM, VMI, PVC, and Secret metadata
-before cleanup or request serving and raises each kind's allocation floor.
-These observations are not imported into reservation history. If the database
-is lost, only surviving Kubernetes objects can set the floor, so numbers from
-fully deleted resources may be reused. Keep backups if historical IDs must
-remain unique. The configured prefixes are bound to the database: changing
-either prefix requires stopping the gateway, removing resources with the old
-prefixes, and resetting the database. After stopping, remove the database file
-and its `-wal` and `-shm` companions to reset it. This ID change requires that
-one-time reset; the old database schema and old resource IDs are unsupported.
-The database needs no ConfigMap or extra Kubernetes RBAC verbs. Exactly one
-active gateway instance is still required for serialized quota checks.
-
-Resources expire after six hours by default, or after the requested TTL up to
-24 hours. A reconciler checks every minute, deleting expired VMs, boot disks,
-cloud-init Secrets, and independent volumes. An attached volume that expires
-first is detached and then deleted. Deleting a VM also deletes its attached
-independent volumes; detached independent volumes keep their own TTL. GET status
-may show no IP address until the VM reports one; it does not prove SSH or a
-guest service is ready.
+- Each successful POST create allocates a new resource. Save the returned ID. If a response is lost, list owned resources before retrying.
+- Create returns HTTP 201 while provisioning continues. Poll GET for status; the CLI polls VM creation unless `--no-wait` is set. A VM is `ready` when its VMI is Running and `nic-1` reports a usable IP. An IP does not prove SSH or a guest service is ready.
+- VM requests take approved image/network, CPU, memory, `bootDiskSize`, and optional `sshPublicKeys`, cloud-config `userData`, and `ttlSeconds`. Volume requests take `size` and optional `ttlSeconds`.
+- Only resources owned by the authenticated run attempt, developer, or smoke identity can be managed. Attachments require a running VM and Bound volume; detach before explicitly deleting a volume.
+- `maxActiveVMs` counts VMs; `maxActiveVolumes` counts independent volumes. Provisioning and deleting objects count until removed. Limits return HTTP 409 with `quota_exceeded`. Use a Kubernetes ResourceQuota for a namespace-wide cap.
+- Resources expire after six hours by default or the requested TTL, up to 24 hours. Cleanup checks each minute. Deleting a VM also deletes its attached independent volumes.
+- Keep the SQLite database across restarts to preserve reserved IDs. If it is lost, IDs from fully deleted resources may be reused. Changing ID prefixes requires stopping the gateway, removing old-prefix resources, and resetting the database and its `-wal` and `-shm` files.
 
 ## Live smoke test
 
-Unit tests and builds run without a cluster. Live creation, actions, hotplug,
-and cleanup must be smoke-tested against a dedicated Harvester v1.7.3 namespace
-before production use. The [smoke test](internal/smoke/live_test.go)
-runs through Go's standard `testing` package as four named subtests: VM
-lifecycle, volume hotplug, VM power and reboot, and VM deletion with an attached
-volume. Up to two subtests run at once, subject to available VM and volume
-quota. Each subtest owns one VM and cleans up independently. The test polls VM
-and volume status every ten seconds by default and checks that at least one VM
-and volume slot are available before running.
-No smoke executable is built. Run it with `./scripts/gateway-smoke.sh` or directly with
-`GATEWAY_SMOKE=1 go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -parallel=2 -v`.
-The selected policy must have at least one available VM and volume slot.
+Builds and unit tests do not need a cluster. Before production use, run the [live smoke test](internal/smoke/live_test.go) in a dedicated Harvester v1.7.3 namespace.
+
+- It covers VM lifecycle, volume hotplug, power/reboot, and deletion with an attached volume.
+- Four subtests run independently, up to two at once when quota permits. Each owns one VM, cleans up independently, and polls every ten seconds by default. At least one VM and volume slot must be available.
+
+There is no smoke executable. Run `./scripts/gateway-smoke.sh` or `GATEWAY_SMOKE=1 go test ./internal/smoke -run '^TestGatewaySmoke$' -count=1 -parallel=2 -v`. Normal `go test ./...` skips it.
 
 ### GitHub Actions
 
-The checked-in [smoke workflow](.github/workflows/smoke.yml) runs only through
-`workflow_dispatch` on the self-hosted `harvester-runners` label. Set repository
-variables `GATEWAY_URL`, `GATEWAY_IMAGE`, and `GATEWAY_NETWORK`; set
-`GATEWAY_AUDIENCE` only if it differs from `api://harvester-runner-gateway`.
-If the gateway uses a self-signed certificate, install its PEM certificate on
-the runner and set `GATEWAY_CA_CERT` to its absolute path.
-The job sets `GATEWAY_SMOKE=1`, requests an OIDC token with `id-token: write`,
-and runs the Go smoke test. For a repository at
-`bk201-org/harvester-runner-gateway` on
-`main`, permit this exact workflow ref and event in the matching gateway
-repository policy:
+- The [smoke workflow](.github/workflows/smoke.yml) runs only through `workflow_dispatch` on the self-hosted `harvester-runners` label.
+- Set repository variables `GATEWAY_URL`, `GATEWAY_IMAGE`, and `GATEWAY_NETWORK`. Set `GATEWAY_AUDIENCE` only if it differs from `api://harvester-runner-gateway`. For a self-signed certificate, install its PEM on the runner and set `GATEWAY_CA_CERT` to its absolute path.
+- The job sets `GATEWAY_SMOKE=1`, grants `id-token: write`, and runs the Go smoke test. For `bk201-org/harvester-runner-gateway` on `main`, allow this exact ref and event in the matching policy:
 
 ```yaml
 allowedWorkflowRefs:
@@ -448,40 +236,19 @@ allowedEvents:
   - workflow_dispatch
 ```
 
-Use the actual repository slug and branch if they differ. Once the workflow is
-on the GitHub default branch, run it through the Actions tab or
-`gh workflow run smoke.yml --ref main`.
+Use the actual slug and branch if different. Once the workflow is on the default branch, start it from the Actions tab or with `gh workflow run smoke.yml --ref main`.
 
 ### Local shell
 
-Local invocation needs a one-time, opt-in `localSmoke` credential on the
-**existing gateway**. The `deploy.sh` helper creates one shared token
-for all profiles at `deploy/local-smoke-token` and syncs it to the remote
-`runner-gateway/tls/local-smoke-token`. The local `deploy/` directory holds
-profile files and generated state and is Git-ignored. Keep this token private
-and reuse it across deployments.
-
-On first deployment of a profile, `deploy.sh` also creates
-`deploy/<PROFILE>.smoke.json` for local smoke tests. It uses `GATEWAY_HOST` and
-`GATEWAY_HOST_PORT` (default 8443), the first allowed image and network from
-the `localSmoke` repository policy, the shared token path, and the local TLS
-certificate path. Existing smoke JSON is left unchanged, so edit it if you
-need another approved image or network. Generation requires yq v4 and
-jq; the file stays local.
-
-For a manual installation, generate 32 random bytes as hex in a private file
-readable by the gateway process:
+- Local invocation needs an opt-in `localSmoke` credential on the existing gateway. `deploy.sh` creates a shared token at `deploy/local-smoke-token` across profiles and syncs it to `runner-gateway/tls/local-smoke-token`. Keep it private and reuse it.
+- On first deployment of a profile, `deploy.sh` creates `deploy/<PROFILE>.smoke.json` from `GATEWAY_HOST`, `GATEWAY_HOST_PORT` (default 8443), the first allowed image/network, token path, and local TLS certificate path.
+- Existing smoke JSON is not changed; edit it to use another approved image or network. Generation requires yq v4 and jq. `deploy/` is Git-ignored.
+- For manual setup, create a private 32-byte hex token and configure an existing repository policy:
 
 ```sh
 umask 077
 openssl rand -hex 32 > /secure/path/local-smoke-token
 ```
-
-Point the gateway configuration at that file and an existing repository policy
-ID, then restart the gateway. The selected policy still controls namespace,
-allowed images and networks, size limits, and quota. Local resources use the
-reserved `local-smoke` run identity, so workflow runs cannot access them; local
-runs and workflow runs still share that repository's quota.
 
 ```yaml
 localSmoke:
@@ -489,10 +256,9 @@ localSmoke:
   tokenFile: /secure/path/local-smoke-token
 ```
 
-For a manual setup, copy the same token to a private file on your
-workstation. Create `~/.config/harvester-runner-gateway/smoke.json` with these
-fields, using
-absolute paths and your approved image and network:
+Restart the gateway. The policy controls namespace, approved images/networks, size limits, and quota. Local resources use the reserved `local-smoke` run identity, isolated from workflows while sharing their repository quota.
+
+For manual workstation setup, copy the token privately and create `~/.config/harvester-runner-gateway/smoke.json` with absolute paths:
 
 ```json
 {
@@ -504,45 +270,16 @@ absolute paths and your approved image and network:
 }
 ```
 
-`caCert` is optional. Set it to the self-signed gateway certificate or the PEM
-CA certificate that signed the gateway certificate. The certificate must match
-the hostname in `gatewayURL`; the script keeps TLS verification enabled.
+- `caCert` is optional; use the self-signed gateway certificate or its PEM CA. The certificate must match the hostname in `gatewayURL`; TLS verification stays enabled.
+- Keep the token owner-readable only (`chmod 600`), out of version control, GitHub variables, and artifacts. Restart the gateway after replacing the token to rotate it.
+- Run `./scripts/gateway-smoke.sh`. Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another config, including generated `deploy/<PROFILE>.smoke.json`.
+- There is no gateway deployment manifest: TLS, networking, image/network names, and RBAC depend on the site.
 
-Keep the token file readable only by its owner (`chmod 600`). It is a bearer
-credential for smoke resources under the selected policy; never commit it or
-put it in GitHub variables or artifacts. Restart the gateway after replacing
-its token file to rotate the credential. Then run:
+## CI VM cluster actions
 
-```sh
-./scripts/gateway-smoke.sh
-```
+- [Create CI VM cluster](actions/create-ci-cluster/README.md) (`actions/create-ci-cluster`): Create identical VMs, write a job-local SSH config, and delete recorded VMs after the job.
+- [Create CI k3s cluster](actions/create-k3s-cluster/README.md) (`actions/create-k3s-cluster`): Create VMs, install k3s over SSH (first VM server, others agents), save a kubeconfig, and delete the VMs after the job.
 
-Set `GATEWAY_SMOKE_CONFIG=/absolute/path/to/smoke.json` to use another local
-configuration, including the generated `deploy/<PROFILE>.smoke.json`. The Go
-test validates configuration and quota before running four
-focused subtests with up to two running at once when quota allows. Each
-subtest owns one VM and cleans up independently. The test is skipped during
-normal `go test ./...` runs; running the script or setting `GATEWAY_SMOKE=1` is
-the explicit opt-in. The gateway has
-no deployment manifest because
-TLS, network reachability, image/network names, and RBAC are site-specific.
+Both actions use `hvst-runner-gw-client` to manage GitHub inputs and job cleanup. Run `make cluster-release` to build Linux amd64/arm64 binaries and checksums. Each action downloads the caller's release URL, or the latest action-repository release when no URL or local path is given.
 
-## CI VM cluster action
-
-Both cluster actions use `hvst-runner-gw-client`. Its `action` commands read
-GitHub inputs and manage job cleanup; its `cluster` commands use local
-configuration and retain resources for debugging.
-
-The reusable [cluster action](actions/create-ci-cluster/README.md) creates identical
-VMs, writes a job-local SSH config, and deletes recorded VMs in its post-job
-step. Run `make cluster-release` to build Linux amd64 and arm64 executables
-and checksums for a GitHub release. The action downloads the matching binary
-from the release URL supplied by the caller, or from the latest release of the
-action repository when no URL or local path is given. Run `make test-cluster-action`
-for an offline command smoke test. To exercise the command against the
-real gateway with the same smoke configuration as `./scripts/gateway-smoke.sh`, run
-`GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh`.
-
-The [k3s cluster action](actions/create-k3s-cluster/README.md) builds on the same
-command. It also installs k3s over SSH (first VM as server, the rest as agents)
-and saves a kubeconfig for the job.
+Run `make test-cluster-action` for an offline command smoke test. To exercise the command against a gateway with the smoke config, run `GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh`.
