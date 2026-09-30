@@ -241,11 +241,22 @@ developers:
 
 Token files must be private regular files (`chmod 600`) containing 64 hex
 characters, with an optional trailing newline. With `docker-run.sh`, put them
-under the mounted TLS directory's `developers/` subdirectory. The deployment
-helper does not provision developer credentials; install them on the gateway
-host separately. Distribute each token privately to its developer. Restart the
-gateway after changing credentials to rotate or revoke access. Keep IDs stable
-and never reassign a former developer's ID: ownership survives token rotation.
+under the mounted TLS directory's `developers/` subdirectory.
+
+`deploy.sh` reads the profile's `developers` entries, generates missing tokens at
+`deploy/developers/<id>.token`, and reuses those files across deployments and
+profiles. It requires `tokenFile: /run/secrets/gateway/developers/<id>.token`
+and uploads each configured token to `runner-gateway/tls/developers/<id>.token`.
+The helper requires yq v4 and jq, rejects malformed or duplicate credentials
+before connecting to the remote host, and sets private file permissions. It
+copies files without restarting the gateway or distributing tokens to users.
+
+For a manual setup, generate each token with `umask 077` and
+`openssl rand -hex 32 > /secure/path/alice.token`. Distribute each token privately
+to its developer. To rotate a helper-managed token, replace its local file and
+redeploy. To revoke access, remove the developer entry and redeploy. Restart the
+gateway after either change. Keep IDs stable and never reassign a former
+developer's ID: ownership survives token rotation.
 
 Developer ownership uses `dev-<id>` and is isolated from other developers,
 GitHub runs, and local smoke resources. Repository policies and quotas apply

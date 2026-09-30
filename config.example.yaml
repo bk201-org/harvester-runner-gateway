@@ -14,7 +14,8 @@ oidc:
 # localSmoke:
 #   repositoryID: "123456789"
 #   tokenFile: /run/secrets/gateway/local-smoke-token
-# Optional individual developer access. Generate a DIFFERENT token per entry.
+# Optional individual developer access. deploy.sh generates and reuses tokens
+# at deploy/developers/<id>.token and uploads them to the tokenFile paths below.
 # IDs are stable identities: never reassign an ID to another person.
 # developers:
 #   - id: alice
