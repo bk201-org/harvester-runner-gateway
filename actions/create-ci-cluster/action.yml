@@ -26,13 +26,13 @@ inputs:
     description: Guest SSH username
     required: true
   binary-url:
-    description: HTTPS release URL for the cluster executable matching this runner architecture; mutually exclusive with binary-path. When neither is set, the latest release of the action repository is downloaded
+    description: HTTPS release URL for the hvst-runner-gw-client executable matching this runner architecture; mutually exclusive with binary-path. When neither is set, the latest release of the action repository is downloaded
     required: false
   binary-path:
-    description: Local path to the cluster executable (relative paths resolve against the workspace); mutually exclusive with binary-url
+    description: Local path to the hvst-runner-gw-client executable (relative paths resolve against the workspace); mutually exclusive with binary-url
     required: false
   binary-sha256:
-    description: SHA-256 of the cluster executable; required with binary-url, optional with binary-path, and overrides the release SHA256SUMS when downloading the latest release
+    description: SHA-256 of the hvst-runner-gw-client executable; required with binary-url, optional with binary-path, and overrides the release SHA256SUMS when downloading the latest release
     required: false
   ttl-seconds:
     description: Optional VM lifetime in seconds; gateway default is six hours

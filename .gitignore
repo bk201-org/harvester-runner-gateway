@@ -3,3 +3,6 @@
 /dist/
 /deploy/
 /config.yaml
+
+# Default developer cluster directory contains private SSH material.
+/debug-cluster/

@@ -1,0 +1,15 @@
+# Copy the resolved provisioning inputs from the failed CI job.
+vm-count: 3
+image: default/ubuntu-24-04
+network: default/vm-network
+cpu: 2
+memory: 4Gi
+boot-disk-size: 20Gi
+username: ubuntu
+# Omit TTL for the gateway's six-hour default; maximum 86400 seconds.
+ttl-seconds: 21600
+wait-timeout-seconds: 600
+# Optional additional cloud-config, merged with the generated SSH public key.
+# user-data: |
+#   #cloud-config
+#   packages: [git]

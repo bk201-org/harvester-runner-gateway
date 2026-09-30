@@ -14,6 +14,12 @@ oidc:
 # localSmoke:
 #   repositoryID: "123456789"
 #   tokenFile: /run/secrets/gateway/local-smoke-token
+# Optional individual developer access. Generate a DIFFERENT token per entry.
+# IDs are stable identities: never reassign an ID to another person.
+# developers:
+#   - id: alice
+#     repositoryID: "123456789"
+#     tokenFile: /run/secrets/gateway/developers/alice.token
 repositories:
   - repositoryID: "123456789"
     namespace: ci-vms

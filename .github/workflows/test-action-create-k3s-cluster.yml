@@ -54,7 +54,7 @@ jobs:
             aarch64 | arm64) arch=arm64 ;;
             *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
           esac
-          binary="dist/hvst-runner-gw-cluster-linux-${arch}"
+          binary="dist/hvst-runner-gw-client-linux-${arch}"
           test -f "$binary"
           chmod +x "$binary"
           echo "path=$binary" >> "$GITHUB_OUTPUT"

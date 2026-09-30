@@ -21,7 +21,7 @@ jobs:
           boot-disk-size: 20Gi
           username: ubuntu
           k3s-version: v1.35.2+k3s1
-          binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-cluster-linux-amd64
+          binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-client-linux-amd64
           binary-sha256: REPLACE_WITH_SHA256_FROM_SHA256SUMS
       - name: Show nodes
         env:

@@ -1,6 +1,6 @@
 # Harvester Runner Gateway
 
-An HTTPS API for GitHub Actions jobs to create and manage short-lived Harvester
+An HTTPS API for GitHub Actions jobs and individual developers to create and manage short-lived Harvester
 VMs and volumes. The gateway is a standalone Go service holding the Harvester
 kubeconfig. Jobs authenticate with GitHub OIDC and never receive that kubeconfig
 or a GitHub PAT. The first target is Harvester v1.7.3.
@@ -128,7 +128,7 @@ this checkout with `go install ./cmd/hvst-runner-gw-client`. Go programs can
 import `github.com/bk201-org/harvester-runner-gateway/client` for typed VM,
 volume, quota, health, readiness, and lifecycle operations.
 
-For local use, configure the gateway's optional `localSmoke` credential as
+For operator smoke testing, configure the gateway's optional `localSmoke` credential as
 [described below](#local-shell), then point the client at the same token file:
 
 ```sh
@@ -158,7 +158,7 @@ Commands whose API response has no body produce no output on success.
 | `ready` | Check Harvester reachability; no authentication |
 | `quota` | Get repository usage and limits |
 | `vm create [flags]` | Create a VM and wait for a running VMI with a usable IP |
-| `vm list` | List run-owned VMs |
+| `vm list` | List caller-owned VMs |
 | `vm get ID` | Get VM status |
 | `vm delete ID` | Request deletion of the VM and its attached volumes |
 | `vm power ID on` / `vm power ID off` | Set desired power state |
@@ -166,7 +166,7 @@ Commands whose API response has no body produce no output on success.
 | `vm attach ID VOLUME_ID` | Request live volume attachment |
 | `vm detach ID VOLUME_ID` | Request volume detachment |
 | `volume create --size 10Gi` | Create an independent volume |
-| `volume list` | List run-owned independent volumes |
+| `volume list` | List caller-owned independent volumes |
 | `volume get ID` | Get volume status |
 | `volume delete ID` | Request volume deletion |
 
@@ -202,7 +202,7 @@ Flags override their corresponding environment variables. Authentication uses
 the configured token file first, then `GATEWAY_TOKEN`, then automatic GitHub
 Actions OIDC when `GITHUB_ACTIONS=true`. A configured credential that cannot be
 read or is malformed fails without falling back. Tokens are never passed as CLI
-arguments or printed. The CLI does not save credentials or profiles. The
+arguments or printed. The CLI does not save credentials or profiles. Cluster commands save private resource state and SSH files. The
 additional gateway CA does not change trust for GitHub OIDC requests. TLS
 verification stays enabled, and redirects are rejected.
 
@@ -219,6 +219,88 @@ code/message when available.
 Creation and action commands return as soon as the gateway accepts the request;
 poll `vm get` or `volume get` to observe completion. Mutations are not
 automatically retried. Deleting an absent resource remains an HTTP 404 failure.
+
+## On-demand developer clusters
+
+Install the `hvst-runner-gw-client` release for Linux or macOS (amd64
+or arm64) and verify it with the release `SHA256SUMS`. OpenSSH client tools
+(`ssh` and `ssh-keygen`) are required. Your workstation must reach the gateway
+and VM network, for example through your existing VPN.
+
+A gateway administrator enables individual access by adding `developers` to
+the gateway config. Each developer has a stable ID, one repository policy, and
+a **different** token. Generate each token with `umask 077` and
+`openssl rand -hex 32 > /secure/path/alice.token`, then configure:
+
+```yaml
+developers:
+  - id: alice
+    repositoryID: "123456789"
+    tokenFile: /run/secrets/gateway/developers/alice.token
+```
+
+Token files must be private regular files (`chmod 600`) containing 64 hex
+characters, with an optional trailing newline. With `docker-run.sh`, put them
+under the mounted TLS directory's `developers/` subdirectory. The deployment
+helper does not provision developer credentials; install them on the gateway
+host separately. Distribute each token privately to its developer. Restart the
+gateway after changing credentials to rotate or revoke access. Keep IDs stable
+and never reassign a former developer's ID: ownership survives token rotation.
+
+Developer ownership uses `dev-<id>` and is isolated from other developers,
+GitHub runs, and local smoke resources. Repository policies and quotas apply
+to developers and CI, which share the repository's quota. Resources owned by
+revoked developers expire normally.
+
+Copy [examples/debug-cluster.yaml](examples/debug-cluster.yaml), fill in the
+failed job's resolved provisioning inputs, and run:
+
+```sh
+export GATEWAY_URL=https://gateway.example.internal:8443
+export GATEWAY_TOKEN_FILE="$HOME/.config/harvester-gateway/token"
+# Optional, for a gateway using your private CA:
+export GATEWAY_CA_CERT=/secure/path/gateway-ca.pem
+
+hvst-runner-gw-client cluster create \
+  --config ./debug-cluster.yaml --state-dir ./debug-cluster
+hvst-runner-gw-client cluster status --state-dir ./debug-cluster
+ssh -F ./debug-cluster/ssh_config <vm-id>
+hvst-runner-gw-client cluster delete --state-dir ./debug-cluster
+```
+
+The provisioning YAML uses the action input names and rejects unknown fields.
+Required fields are `vm-count`, `image`, `network`, `cpu`, `memory`,
+`boot-disk-size`, and `username`. Optional fields are `user-data` (inline
+cloud-config), `ttl-seconds`, and `wait-timeout-seconds` (default 600).
+Connection settings and credentials use the global client flags or
+environment variables. Local cluster commands never request GitHub OIDC.
+
+JSON output includes VM status, IPs, expiry times, SSH configuration, and ready-to-copy
+SSH commands. Check out the failed test revision and execute its setup and tests
+manually. This creates fresh VMs, not a snapshot of a failed job. Running VMs
+with an IP are considered ready; SSH and cloud-init may still be starting.
+Local k3s installation and automatic test execution are not included.
+
+The state directory must not already exist when creating a cluster. It contains
+private SSH material and a saved provisioning configuration: keep it out of
+version control and artifacts. Operations lock the directory, bind it to the
+original gateway URL, and save each returned VM ID atomically. Always use the
+same developer identity for status and deletion; another identity cannot see
+the VMs. A different identity's 404 response cannot distinguish an inaccessible
+VM from a deleted VM.
+
+Failures and interruptions keep recorded VMs and SSH files for inspection.
+Run `cluster status` to refresh addresses and the SSH config, then retry cleanup
+with `cluster delete`. Creation is never automatically retried. If a create
+response was lost, use `vm list` to locate unrecorded resources and
+`vm delete ID` to remove them. Cluster deletion only covers recorded IDs.
+
+Deletion waits for recorded VMs to disappear (default ten minutes, configurable
+with `--wait-timeout`). Failures preserve keys and state. Successful deletion
+removes the keys and leaves a small state tombstone so repeated deletion is safe;
+the directory can then be removed manually. Clusters otherwise expire after six
+hours by default, up to 24 hours. The gateway performs expiry cleanup even when
+your workstation is offline.
 
 ## Authentication
 
@@ -274,7 +356,7 @@ optional `sshPublicKeys`, optional `userData` in cloud-config format, and
 optional `ttlSeconds`. The SSH keys are inserted for the configured default
 guest user. Volume requests accept `size` and optional `ttlSeconds`. Volume
 attachments require a running VM and a Bound volume; live hotplug uses SCSI.
-Only resources created by this gateway for the same run attempt can be managed.
+Only resources created by this gateway for the authenticated run attempt, developer, or smoke identity can be managed.
 Repository, run, and attempt remain ownership labels. GitHub OIDC resources
 also carry the exact verified workflow ref in a `runner-gw-workflow-ref`
 annotation; local smoke resources have no workflow ref annotation.
@@ -435,6 +517,10 @@ no deployment manifest because
 TLS, network reachability, image/network names, and RBAC are site-specific.
 
 ## CI VM cluster action
+
+Both cluster actions use `hvst-runner-gw-client`. Its `action` commands read
+GitHub inputs and manage job cleanup; its `cluster` commands use local
+configuration and retain resources for debugging.
 
 The reusable [cluster action](actions/create-ci-cluster/README.md) creates identical
 VMs, writes a job-local SSH config, and deletes recorded VMs in its post-job

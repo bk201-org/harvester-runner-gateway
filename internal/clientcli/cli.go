@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bk201-org/harvester-runner-gateway/client"
+	"github.com/bk201-org/harvester-runner-gateway/internal/cluster"
 )
 
 const defaultVMWaitTimeout = 5 * time.Minute
@@ -33,11 +34,13 @@ type command struct {
 const rootHelp = `Usage: hvst-runner-gw-client [global flags] COMMAND
 
 Commands:
+  cluster create|status|delete    Manage persistent local VM clusters
+  action create|create-k3s|cleanup Run the GitHub Actions adapter
   health                         Check gateway health
   ready                          Check Harvester readiness
   quota                          Get repository usage and limits
   vm create [flags]              Create a VM
-  vm list                        List run-owned VMs
+  vm list                        List caller-owned VMs
   vm get ID                      Get VM status
   vm delete ID                   Request VM deletion
   vm power ID on|off             Set desired power state
@@ -104,6 +107,34 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		args = append(append([]string{}, fs.Args()[1:]...), "--help")
 	} else {
 		args = fs.Args()
+	}
+	if args[0] == "action" {
+		if len(args) != 2 || args[1] == "--help" || args[1] == "-h" {
+			fmt.Fprintln(stderr, "Usage: hvst-runner-gw-client action create|create-k3s|cleanup (uses GitHub action environment)")
+			if len(args) == 2 {
+				return 0
+			}
+			return 2
+		}
+		if args[1] != "create" && args[1] != "create-k3s" && args[1] != "cleanup" {
+			fmt.Fprintln(stderr, "unknown action operation")
+			return 2
+		}
+		if err := cluster.Run(ctx, args[1], getenv); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if args[0] == "cluster" {
+		var err error
+		cfg.Timeout, err = time.ParseDuration(timeout)
+		if err != nil || cfg.Timeout <= 0 {
+			fmt.Fprintln(stderr, "--timeout must be a positive duration")
+			return 2
+		}
+		cfg.GitHubActions = false
+		return cluster.RunLocal(ctx, args[1:], cfg, stdout, stderr)
 	}
 	operation, err := parseCommand(args, stderr, vmWaitTimeout)
 	if err != nil {

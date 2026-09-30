@@ -4,6 +4,8 @@ This action creates a group of identical VMs through harvester-runner-gateway,
 waits until each VM reports a running VMI with a usable IP, and deletes the
 recorded VMs at the end of the job. It uses one generated Ed25519 keypair for
 all VMs. The SSH config and key exist only on the runner during the job.
+The action invokes `hvst-runner-gw-client action create` and
+`hvst-runner-gw-client action cleanup`.
 
 Use a Linux self-hosted runner with Node 24 action support, `ssh-keygen`, and
 HTTPS access to the gateway. Grant the job `id-token: write`. The gateway must
@@ -84,9 +86,9 @@ The script reads `gatewayURL`, `image`, `network`, `tokenFile`, and optional
 `${XDG_CONFIG_HOME:-$HOME/.config}/harvester-runner-gateway/smoke.json`, the
 same location as `./scripts/gateway-smoke.sh`.
 
-The script builds and invokes `hvst-runner-gw-cluster create`, reports
+The script builds and invokes `hvst-runner-gw-client action create`, reports
 progress and the returned VM IDs, then checks the key and SSH config. It invokes
-`cleanup` on exit, including after a failed create. Run with `--no-cleanup` to
+`action cleanup` on exit, including after a failed create. Run with `--no-cleanup` to
 keep the VMs and SSH files; the script prints SSH and manual cleanup commands.
 The cleanup command uses the saved state and removes the saved files on success.
 Keep the printed temp directory until you run it. The VMs still expire according

@@ -295,3 +295,92 @@ func TestQuantityValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalAndActionCommands(t *testing.T) {
+	for _, mode := range []string{"cluster", "action"} {
+		t.Run(mode, func(t *testing.T) {
+			exists := false
+			creates := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer developer-test-token" {
+					t.Error("incorrect auth")
+					w.WriteHeader(401)
+					return
+				}
+				switch r.Method {
+				case "POST":
+					exists = true
+					creates++
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["cpu"] != float64(2) || body["image"] != "default/ubuntu" {
+						t.Errorf("bad provisioning body: %v", body)
+					}
+					w.WriteHeader(201)
+					fmt.Fprint(w, `{"id":"vm-1","ready":false}`)
+				case "GET":
+					if !exists {
+						w.WriteHeader(404)
+						fmt.Fprint(w, `{"code":"not_found"}`)
+						return
+					}
+					fmt.Fprint(w, `{"id":"vm-1","ready":true,"ipAddresses":["10.0.0.1"]}`)
+				case "DELETE":
+					exists = false
+					w.WriteHeader(204)
+				}
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			state := filepath.Join(dir, "cluster")
+			token := writeTestFile(t, "token", []byte("developer-test-token"))
+			env := map[string]string{"GATEWAY_URL": server.URL, "GATEWAY_TOKEN_FILE": token, "GATEWAY_CA_CERT": testCA(t, server)}
+			create := []string{"cluster", "create", "--state-dir", state, "--config", writeTestFile(t, "cluster.yaml", []byte("vm-count: 1\nimage: default/ubuntu\nnetwork: default/net\ncpu: 2\nmemory: 4Gi\nboot-disk-size: 20Gi\nusername: ci\n"))}
+			cleanup := []string{"cluster", "delete", "--state-dir", state}
+			if mode == "action" {
+				create = []string{"action", "create"}
+				cleanup = []string{"action", "cleanup"}
+				for key, value := range map[string]string{"INPUT_GATEWAY-URL": server.URL, "INPUT_CA-CERT-PATH": env["GATEWAY_CA_CERT"], "INPUT_VM-COUNT": "1", "INPUT_IMAGE": "default/ubuntu", "INPUT_NETWORK": "default/net", "INPUT_CPU": "2", "INPUT_MEMORY": "4Gi", "INPUT_BOOT-DISK-SIZE": "20Gi", "INPUT_USERNAME": "ci", "RUNNER_TEMP": dir, "GITHUB_STATE": writeTestFile(t, "state", nil), "GITHUB_OUTPUT": writeTestFile(t, "output", nil)} {
+					env[key] = value
+				}
+			} else {
+				// A local command must use its explicit credential even in an Actions environment.
+				env["GITHUB_ACTIONS"] = "true"
+			}
+			if code, out, err := invoke(create, env); code != 0 {
+				t.Fatalf("create exit=%d out=%s err=%s", code, out, err)
+			}
+			if mode == "action" {
+				data, err := os.ReadFile(env["GITHUB_STATE"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				env["STATE_cluster_state"] = strings.TrimSpace(strings.TrimPrefix(string(data), "cluster_state="))
+			} else {
+				if code, out, err := invoke([]string{"cluster", "status", "--state-dir", state}, env); code != 0 || !strings.Contains(out, "sshCommands") {
+					t.Fatalf("status exit=%d out=%s err=%s", code, out, err)
+				}
+			}
+			if code, out, err := invoke(cleanup, env); code != 0 {
+				t.Fatalf("cleanup exit=%d out=%s err=%s", code, out, err)
+			}
+			if exists || creates != 1 {
+				t.Fatalf("exists=%v creates=%d", exists, creates)
+			}
+		})
+	}
+}
+
+func TestClusterCLIRejectsInvalidInputBeforeProvisioning(t *testing.T) {
+	base := "vm-count: 1\nimage: default/ubuntu\nnetwork: default/net\ncpu: 2\nmemory: 4Gi\nboot-disk-size: 20Gi\nusername: ci\n"
+	for _, body := range []string{base + "typo: true\n", strings.Replace(base, "memory: 4Gi", "memory: -1Gi", 1), base + "ttl-seconds: 86401\n", strings.Replace(base, "vm-count: 1", "vm-count: 0", 1), base + "user-data: invalid\n"} {
+		dir := filepath.Join(t.TempDir(), "cluster")
+		path := writeTestFile(t, "config.yaml", []byte(body))
+		code, _, _ := invoke([]string{"cluster", "create", "--config", path, "--state-dir", dir}, map[string]string{"GATEWAY_URL": "https://unused.example", "GATEWAY_TOKEN": "test"})
+		if code != 2 {
+			t.Fatalf("invalid input exit=%d", code)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatal("invalid configuration created state")
+		}
+	}
+}

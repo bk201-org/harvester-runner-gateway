@@ -48,14 +48,14 @@ admin credentials for a cluster that no longer exists after the job.
     boot-disk-size: 20Gi
     username: ubuntu
     k3s-version: v1.35.2+k3s1
-    binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-cluster-linux-amd64
+    binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-client-linux-amd64
     binary-sha256: REPLACE_WITH_SHA256_FROM_SHA256SUMS
 - run: kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes
   env:
     KUBECONFIG_PATH: ${{ steps.cluster.outputs.kubeconfig-path }}
 ```
 
-The action runs the `create-k3s` command of the `hvst-runner-gw-cluster`
+The action runs the `action create-k3s` command of the `hvst-runner-gw-client`
 executable, so the release binary and its checksum are the same as for
 `create-ci-cluster`. Without `binary-url` or `binary-path`, it downloads the
 latest release binary as described there. See that README for building, publishing, and local
@@ -64,7 +64,7 @@ arguments.
 
 ## Test locally without GitHub Actions
 
-`scripts/k3s-smoke.sh` runs the `create-k3s` command from your machine with the
+`scripts/k3s-smoke.sh` runs the `action create-k3s` command from your machine with the
 same [smoke configuration](../../README.md#local-shell) as
 `scripts/cluster-smoke.sh`. It creates 2 VMs by default (`GATEWAY_VM_COUNT`),
 installs k3s, checks that every node is Ready and that the saved kubeconfig

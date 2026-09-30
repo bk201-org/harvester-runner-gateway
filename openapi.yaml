@@ -2,12 +2,13 @@ openapi: 3.0.3
 info:
   title: Harvester Runner Gateway
   version: 1.0.0
-  description: Run-scoped VM and volume operations for approved GitHub Actions jobs and local smoke tests.
+  description: Owner-scoped VM and volume operations for approved GitHub Actions jobs, individual developers, and local smoke tests.
 servers:
   - url: https://gateway.example.internal:8443
 security:
   - githubOIDC: []
   - localSmokeToken: []
+  - developerToken: []
 paths:
   /healthz:
     get:
@@ -24,7 +25,7 @@ paths:
     get:
       responses:
         "200":
-          description: Active resources and limits for this repository across all runs and attempts
+          description: Active resources and limits for this repository across all runs, attempts, and developers
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Quota"}
@@ -32,7 +33,7 @@ paths:
     get:
       responses:
         "200":
-          description: Run-owned VMs
+          description: Caller-owned VMs
           content:
             application/json:
               schema:
@@ -65,11 +66,11 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/VMStatus"}
-        "404": {description: VM absent or not owned by this run attempt}
+        "404": {description: VM absent or not owned by this caller}
     delete:
       responses:
         "204": {description: Deletion requested}
-        "404": {description: VM absent or not owned by this run attempt}
+        "404": {description: VM absent or not owned by this caller}
   /v1/vms/{id}/power:
     parameters:
       - $ref: "#/components/parameters/VMID"
@@ -86,7 +87,7 @@ paths:
                 state: {type: string, enum: ["on", "off"]}
       responses:
         "202": {description: Desired power action accepted}
-        "404": {description: VM absent or not owned by this run attempt}
+        "404": {description: VM absent or not owned by this caller}
   /v1/vms/{id}/reboot:
     parameters:
       - $ref: "#/components/parameters/VMID"
@@ -94,7 +95,7 @@ paths:
       responses:
         "202": {description: Reboot accepted}
         "409": {description: VM is powered off or busy}
-        "404": {description: VM absent or not owned by this run attempt}
+        "404": {description: VM absent or not owned by this caller}
   /v1/vms/{id}/volumes/{volumeID}:
     parameters:
       - $ref: "#/components/parameters/VMID"
@@ -103,16 +104,16 @@ paths:
       responses:
         "202": {description: Live SCSI attachment accepted}
         "409": {description: VM or volume not ready, or volume attached elsewhere}
-        "404": {description: Resource absent or not owned by this run attempt}
+        "404": {description: Resource absent or not owned by this caller}
     delete:
       responses:
         "202": {description: Detachment accepted}
-        "404": {description: Resource absent or not owned by this run attempt}
+        "404": {description: Resource absent or not owned by this caller}
   /v1/volumes:
     get:
       responses:
         "200":
-          description: Run-owned independent volumes
+          description: Caller-owned independent volumes
           content:
             application/json:
               schema:
@@ -145,14 +146,18 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/VolumeStatus"}
-        "404": {description: Volume absent or not owned by this run attempt}
+        "404": {description: Volume absent or not owned by this caller}
     delete:
       responses:
         "204": {description: Deletion requested}
         "409": {description: Volume is attached; detach it first}
-        "404": {description: Volume absent or not owned by this run attempt}
+        "404": {description: Volume absent or not owned by this caller}
 components:
   securitySchemes:
+    developerToken:
+      type: http
+      scheme: bearer
+      description: Individually issued token configured under developers; scoped to a stable developer identity and one repository policy. Rotation and revocation require a gateway restart.
     githubOIDC:
       type: http
       scheme: bearer

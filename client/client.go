@@ -27,6 +27,16 @@ type ConfigError struct{ Err error }
 func (e *ConfigError) Error() string   { return e.Err.Error() }
 func configError(message string) error { return &ConfigError{errors.New(message)} }
 
+// HTTPError exposes a gateway HTTP status and error message.
+type HTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("gateway HTTP %d: %s", e.StatusCode, e.Message)
+}
+
 type Config struct {
 	URL, TokenFile, Token, CACert, Audience string
 	Timeout                                 time.Duration
@@ -353,10 +363,10 @@ func (c *Client) Do(ctx context.Context, operation Request) (data []byte, err er
 					message = strings.ReplaceAll(message, secret, "[REDACTED]")
 				}
 			}
-			err = fmt.Errorf("gateway HTTP %d: %s", res.StatusCode, message)
+			err = &HTTPError{StatusCode: res.StatusCode, Message: message}
 			return nil, err
 		}
-		err = fmt.Errorf("gateway HTTP %d: unexpected or non-JSON error response", res.StatusCode)
+		err = &HTTPError{StatusCode: res.StatusCode, Message: "unexpected or non-JSON error response"}
 		return nil, err
 	}
 	if res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusAccepted {

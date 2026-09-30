@@ -42,6 +42,10 @@ func run(path string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	verifier, err = auth.NewDeveloperVerifier(verifier, cfg)
+	if err != nil {
+		return err
+	}
 	backend, err := harvester.New(cfg, logger)
 	if err != nil {
 		return err

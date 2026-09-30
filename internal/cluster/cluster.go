@@ -1,4 +1,4 @@
-package clusteraction
+package cluster
 
 import (
 	"context"
@@ -32,8 +32,11 @@ type options struct {
 }
 
 type clusterState struct {
-	Dir string   `json:"dir"`
-	IDs []string `json:"ids"`
+	Dir     string       `json:"dir"`
+	IDs     []string     `json:"ids"`
+	Version int          `json:"version,omitempty"`
+	Gateway string       `json:"gateway,omitempty"`
+	Config  *LocalConfig `json:"config,omitempty"`
 }
 
 // vmCluster describes the VMs created by createVMs. Statuses follow the
@@ -161,19 +164,11 @@ func createVMs(ctx context.Context, api vmAPI, opt options) (vmCluster, error) {
 	if err := appendGitHubFile(opt.StateFile, "cluster_state", statePath); err != nil {
 		return none, err
 	}
-	privateKey := filepath.Join(dir, "id_ed25519")
-	keygen := exec.CommandContext(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", privateKey)
-	if output, err := keygen.CombinedOutput(); err != nil {
-		return none, fmt.Errorf("generate SSH keypair: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	publicKey, err := os.ReadFile(privateKey + ".pub")
-	if err != nil {
-		return none, fmt.Errorf("read generated SSH public key: %w", err)
-	}
-	opt.Request.UserData, err = cloudConfig(opt.UserData, opt.Username, strings.TrimSpace(string(publicKey)))
+	privateKey, request, err := prepareRequest(ctx, dir, opt)
 	if err != nil {
 		return none, err
 	}
+	opt.Request = request
 	if err := provision(ctx, api, opt.Request, opt.Count, &state, statePath); err != nil {
 		return none, err
 	}
@@ -197,6 +192,25 @@ func createVMs(ctx context.Context, api vmAPI, opt options) (vmCluster, error) {
 		}
 	}
 	return vmCluster{Dir: dir, ConfigPath: configPath, PrivateKey: privateKey, Statuses: statuses}, nil
+}
+
+// prepareRequest is shared by local clusters and both GitHub action adapters.
+func prepareRequest(ctx context.Context, dir string, opt options) (string, client.VMRequest, error) {
+	privateKey := filepath.Join(dir, "id_ed25519")
+	keygen := exec.CommandContext(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", privateKey)
+	if output, err := keygen.CombinedOutput(); err != nil {
+		return "", client.VMRequest{}, fmt.Errorf("generate SSH keypair: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	publicKey, err := os.ReadFile(privateKey + ".pub")
+	if err != nil {
+		return "", client.VMRequest{}, fmt.Errorf("read generated SSH public key: %w", err)
+	}
+	userData, err := cloudConfig(opt.UserData, opt.Username, strings.TrimSpace(string(publicKey)))
+	if err != nil {
+		return "", client.VMRequest{}, err
+	}
+	opt.Request.UserData = userData
+	return privateKey, opt.Request, nil
 }
 
 func provision(ctx context.Context, api vmAPI, request client.VMRequest, count int, state *clusterState, statePath string) error {
@@ -277,11 +291,30 @@ func writeState(path string, state clusterState) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), ".cluster-state-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer os.Remove(file.Name())
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func readState(path, tempDir string) (clusterState, error) {

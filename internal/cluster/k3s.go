@@ -1,4 +1,4 @@
-package clusteraction
+package cluster
 
 import (
 	"bytes"

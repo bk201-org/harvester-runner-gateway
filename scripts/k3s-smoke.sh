@@ -58,7 +58,7 @@ else
 fi
 state_file="$temp_dir/github_state"
 output_file="$temp_dir/github_output"
-binary="$temp_dir/hvst-runner-gw-cluster"
+binary="$temp_dir/hvst-runner-gw-client"
 
 common_env=(
   "GITHUB_ACTIONS=false"
@@ -79,7 +79,7 @@ run_cluster_cleanup() {
   if ! cp -- "$cluster_state" "$backup"; then
     return 1
   fi
-  if env "${common_env[@]}" "STATE_cluster_state=$cluster_state" "$binary" cleanup; then
+  if env "${common_env[@]}" "STATE_cluster_state=$cluster_state" "$binary" action cleanup; then
     rm -f -- "$backup"
     return 0
   fi
@@ -152,12 +152,12 @@ trap cleanup EXIT
 
 printf 'Using smoke config: %s\n' "$smoke_config"
 if [[ -n "${CLUSTER_SMOKE_BINARY:-}" ]]; then
-  printf 'Using cluster executable: %s\n' "$CLUSTER_SMOKE_BINARY"
+  printf 'Using client executable: %s\n' "$CLUSTER_SMOKE_BINARY"
   cp -- "$CLUSTER_SMOKE_BINARY" "$binary"
   chmod 700 "$binary"
 else
-  echo "Building cluster executable..."
-  (cd "$repo_dir" && CGO_ENABLED=0 go build -trimpath -o "$binary" ./cmd/hvst-runner-gw-cluster)
+  echo "Building client executable..."
+  (cd "$repo_dir" && CGO_ENABLED=0 go build -trimpath -o "$binary" ./cmd/hvst-runner-gw-client)
 fi
 
 user_data=""
@@ -183,7 +183,7 @@ env "${common_env[@]}" \
   "INPUT_SSH-TIMEOUT-SECONDS=${K3S_SSH_TIMEOUT_SECONDS:-300}" \
   "INPUT_K3S-TIMEOUT-SECONDS=${K3S_TIMEOUT_SECONDS:-900}" \
   "INPUT_USER-DATA=$user_data" \
-  "$binary" create-k3s
+  "$binary" action create-k3s
 
 echo "Validating cluster state and command outputs..."
 cluster_state=$(cluster_state_path)

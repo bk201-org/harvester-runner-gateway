@@ -7,6 +7,7 @@ Usage: ./docker-run.sh CONFIG_FILE TLS_DIR HARVESTER_DIR DATA_DIR
 
 All four paths must be absolute. CONFIG_FILE is the gateway YAML config.
 TLS_DIR contains tls.crt and tls.key, plus local-smoke-token when enabled.
+Place developer token files under TLS_DIR/developers/ when developer access is enabled.
 HARVESTER_DIR contains kubeconfig.
 DATA_DIR persists the SQLite database and must be writable by the image's
 runtime user. The paths inside the container match config.example.yaml.

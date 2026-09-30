@@ -46,7 +46,8 @@ func newAllocator(prefixes config.IDPrefixes) *allocator {
 
 func validOwner(owner auth.Owner) bool {
 	return decimal(owner.RepositoryID) && decimal(owner.RunAttempt) &&
-		(owner.RunID == "local-smoke" || decimal(owner.RunID))
+		(owner.RunID == "local-smoke" || decimal(owner.RunID) ||
+			(strings.HasPrefix(owner.RunID, "dev-") && config.ValidDeveloperID(strings.TrimPrefix(owner.RunID, "dev-")) && owner.RunAttempt == "1" && owner.WorkflowRef == ""))
 }
 
 func decimal(s string) bool {

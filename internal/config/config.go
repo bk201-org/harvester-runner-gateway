@@ -34,6 +34,7 @@ type Config struct {
 	VMPrefix      string             `json:"vmPrefix"`
 	VolumePrefix  string             `json:"volumePrefix"`
 	OIDC          OIDCConfig         `json:"oidc"`
+	Developers    []DeveloperConfig  `json:"developers"`
 	LocalSmoke    LocalSmokeConfig   `json:"localSmoke"`
 	Repositories  []RepositoryPolicy `json:"repositories"`
 }
@@ -77,6 +78,35 @@ type TLSConfig struct {
 type OIDCConfig struct {
 	Issuer   string `json:"issuer"`
 	Audience string `json:"audience"`
+}
+
+type DeveloperConfig struct {
+	ID           string `json:"id"`
+	RepositoryID string `json:"repositoryID"`
+	TokenFile    string `json:"tokenFile"`
+}
+
+var developerIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+func ValidDeveloperID(id string) bool {
+	return len(id) <= 59 && developerIDPattern.MatchString(id)
+}
+
+func (c Config) ValidateDevelopers() error {
+	seen := map[string]bool{}
+	for _, d := range c.Developers {
+		if !ValidDeveloperID(d.ID) || seen[d.ID] {
+			return fmt.Errorf("developers: ID must be unique, lowercase DNS-safe, and at most 59 characters")
+		}
+		seen[d.ID] = true
+		if !filepath.IsAbs(d.TokenFile) {
+			return fmt.Errorf("developer %s: tokenFile must be absolute", d.ID)
+		}
+		if _, ok := c.Repository(d.RepositoryID); !ok {
+			return fmt.Errorf("developer %s: repositoryID must match a configured repository", d.ID)
+		}
+	}
+	return nil
 }
 
 type LocalSmokeConfig struct {
@@ -202,7 +232,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("localSmoke.repositoryID must match a configured repository")
 		}
 	}
-	return nil
+	return c.ValidateDevelopers()
 }
 
 func (c Config) Repository(id string) (RepositoryPolicy, bool) {

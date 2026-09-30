@@ -22,12 +22,15 @@ COPY --from=binary-build /out/ /
 FROM source AS release-build
 RUN mkdir -p /release \
     && for arch in amd64 arm64; do \
-        for name in hvst-runner-gw hvst-runner-gw-client hvst-runner-gw-cluster; do \
+        for name in hvst-runner-gw hvst-runner-gw-client; do \
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "/release/${name}-linux-${arch}" "./cmd/${name}" || exit 1; \
         done; \
     done \
+    && for arch in amd64 arm64; do \
+        CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "/release/hvst-runner-gw-client-darwin-${arch}" ./cmd/hvst-runner-gw-client || exit 1; \
+    done \
     && cd /release \
-    && sha256sum hvst-runner-gw-linux-* hvst-runner-gw-client-linux-* hvst-runner-gw-cluster-linux-* > SHA256SUMS
+    && sha256sum hvst-runner-gw-linux-* hvst-runner-gw-client-* > SHA256SUMS
 
 FROM scratch AS cluster-release
 COPY --from=release-build /release/ /
@@ -50,7 +53,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ARG RUN_ID
 RUN : "$RUN_ID" \
-    && go test ./internal/clusteraction -count=1 \
+    && go test ./internal/cluster -count=1 \
     && node --test actions/create-ci-cluster/launcher.test.js \
     && node --check actions/create-k3s-cluster/main.js \
     && node --check actions/create-k3s-cluster/post.js \

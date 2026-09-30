@@ -26,6 +26,6 @@ jobs:
             dist/hvst-runner-gw-linux-arm64 \
             dist/hvst-runner-gw-client-linux-amd64 \
             dist/hvst-runner-gw-client-linux-arm64 \
-            dist/hvst-runner-gw-cluster-linux-amd64 \
-            dist/hvst-runner-gw-cluster-linux-arm64 \
+            dist/hvst-runner-gw-client-darwin-amd64 \
+            dist/hvst-runner-gw-client-darwin-arm64 \
             dist/SHA256SUMS

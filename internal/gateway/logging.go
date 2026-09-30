@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bk201-org/harvester-runner-gateway/internal/auth"
@@ -82,6 +83,9 @@ func (s *Server) logResourceEvent(ctx context.Context, operation, resourceType, 
 		slog.String("repository_id", owner.RepositoryID),
 		slog.String("run_id", owner.RunID),
 		slog.String("run_attempt", owner.RunAttempt),
+	}
+	if strings.HasPrefix(owner.RunID, "dev-") {
+		base = append(base, slog.String("developer_id", strings.TrimPrefix(owner.RunID, "dev-")))
 	}
 	s.logger.LogAttrs(ctx, slog.LevelInfo, "resource operation completed", append(base, attributes...)...)
 }

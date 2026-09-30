@@ -36,7 +36,7 @@ test('loadBinary downloads the latest release when no url or path is given', asy
     download: async url => {
       requested.push(url);
       if (url.endsWith('/SHA256SUMS')) {
-        return Buffer.from(`${'0'.repeat(64)}  hvst-runner-gw-linux-amd64\n${sha}  hvst-runner-gw-cluster-linux-amd64\n`);
+        return Buffer.from(`${'0'.repeat(64)}  hvst-runner-gw-linux-amd64\n${sha}  hvst-runner-gw-client-linux-amd64\n`);
       }
       return data;
     },
@@ -46,7 +46,7 @@ test('loadBinary downloads the latest release when no url or path is given', asy
   assert.deepEqual(requested, [
     'https://github.com owner/repo',
     'https://github.com/owner/repo/releases/download/v1.2.3/SHA256SUMS',
-    'https://github.com/owner/repo/releases/download/v1.2.3/hvst-runner-gw-cluster-linux-amd64',
+    'https://github.com/owner/repo/releases/download/v1.2.3/hvst-runner-gw-client-linux-amd64',
   ]);
   await assert.rejects(loadBinary({ ...env, 'INPUT_BINARY-SHA256': '1'.repeat(64) }, deps), /verification/);
   await assert.rejects(loadBinary(env, { ...deps, arch: 'ia32' }), /no release binary/);
@@ -70,7 +70,7 @@ test('loadBinary validates input combinations', async () => {
 });
 
 test('binary verification rejects a wrong checksum', () => {
-  const data = Buffer.from('cluster executable');
+  const data = Buffer.from('client executable');
   const correct = crypto.createHash('sha256').update(data).digest('hex');
   assert.equal(verifiedBinary(data, correct), data);
   assert.throws(() => verifiedBinary(data, '0'.repeat(64)), /verification/);
@@ -80,9 +80,9 @@ test('binary verification rejects a wrong checksum', () => {
 test('post passes action state to the cleanup executable', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-test-'));
   const dir = fs.mkdtempSync(path.join(temp, 'hvst-cluster-bin-'));
-  const binary = path.join(dir, 'hvst-runner-gw-cluster');
+  const binary = path.join(dir, 'hvst-runner-gw-client');
   const marker = path.join(temp, 'marker');
-  fs.writeFileSync(binary, '#!/bin/sh\nprintf "%s:%s" "$1" "$STATE_cluster_state" > "$TEST_MARKER"\n', { mode: 0o700 });
+  fs.writeFileSync(binary, '#!/bin/sh\nprintf "%s:%s:%s" "$1" "$2" "$STATE_cluster_state" > "$TEST_MARKER"\n', { mode: 0o700 });
   const previous = { ...process.env };
   try {
     process.env.RUNNER_TEMP = temp;
@@ -90,7 +90,7 @@ test('post passes action state to the cleanup executable', async () => {
     process.env.STATE_cluster_state = '/tmp/example-state';
     process.env.TEST_MARKER = marker;
     await post();
-    assert.equal(fs.readFileSync(marker, 'utf8'), 'cleanup:/tmp/example-state');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'action:cleanup:/tmp/example-state');
     assert.equal(fs.existsSync(dir), false);
   } finally {
     process.env = previous;
@@ -98,10 +98,10 @@ test('post passes action state to the cleanup executable', async () => {
   }
 });
 
-test('main passes the requested command to the cluster executable', async () => {
+test('main passes the requested command to the client executable', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-main-'));
   const marker = path.join(temp, 'marker');
-  fs.writeFileSync(path.join(temp, 'bin'), '#!/bin/sh\nprintf "%s" "$1" > "$TEST_MARKER"\n', { mode: 0o700 });
+  fs.writeFileSync(path.join(temp, 'bin'), '#!/bin/sh\nprintf "%s:%s" "$1" "$2" > "$TEST_MARKER"\n', { mode: 0o700 });
   fs.writeFileSync(path.join(temp, 'state'), '');
   const previous = { ...process.env };
   try {
@@ -113,7 +113,7 @@ test('main passes the requested command to the cluster executable', async () => 
       TEST_MARKER: marker,
     });
     await main('create-k3s');
-    assert.equal(fs.readFileSync(marker, 'utf8'), 'create-k3s');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'action:create-k3s');
     await assert.rejects(main('bogus'), /unknown cluster command/);
   } finally {
     process.env = previous;

@@ -15,7 +15,7 @@ function verifiedBinary(data, expected) {
   }
   const digest = crypto.createHash('sha256').update(data).digest('hex');
   if (!crypto.timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(expected, 'hex'))) {
-    throw new Error('downloaded cluster executable failed SHA-256 verification');
+    throw new Error('downloaded client executable failed SHA-256 verification');
   }
   return data;
 }
@@ -72,7 +72,7 @@ async function loadLatestRelease(env, deps) {
   if (deps.platform !== 'linux' || !arch) throw new Error(`no release binary for ${deps.platform}/${deps.arch}`);
   const base = (env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/+$/, '');
   const tag = await deps.latestTag(base, repo);
-  const name = `hvst-runner-gw-cluster-linux-${arch}`;
+  const name = `hvst-runner-gw-client-linux-${arch}`;
   const releaseBase = `${base}/${repo}/releases/download/${encodeURIComponent(tag)}`;
   console.log(`Downloading ${name} from ${repo} release ${tag}`);
   const sha = env['INPUT_BINARY-SHA256'] || checksumFor((await deps.download(`${releaseBase}/SHA256SUMS`)).toString('utf8'), name);
@@ -142,7 +142,7 @@ function saveState(key, value) {
 
 function run(binary, command) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, [command], { stdio: 'inherit', env: process.env });
+    const child = spawn(binary, ['action', command], { stdio: 'inherit', env: process.env });
     child.on('error', reject);
     child.on('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`cluster ${command} exited with ${code ?? signal}`)));
   });
@@ -154,7 +154,7 @@ async function main(command = 'create') {
   if (!temp) throw new Error('RUNNER_TEMP is required');
   const dir = fs.mkdtempSync(path.join(temp, 'hvst-cluster-bin-'));
   fs.chmodSync(dir, 0o700);
-  const binary = path.join(dir, 'hvst-runner-gw-cluster');
+  const binary = path.join(dir, 'hvst-runner-gw-client');
   let registered = false;
   try {
     const data = await loadBinary();
@@ -173,8 +173,8 @@ async function post() {
   if (!binary) return;
   const temp = process.env.RUNNER_TEMP;
   const dir = path.dirname(binary);
-  if (!temp || path.dirname(dir) !== path.resolve(temp) || !path.basename(dir).startsWith('hvst-cluster-bin-') || path.basename(binary) !== 'hvst-runner-gw-cluster') {
-    throw new Error('invalid saved cluster executable path');
+  if (!temp || path.dirname(dir) !== path.resolve(temp) || !path.basename(dir).startsWith('hvst-cluster-bin-') || path.basename(binary) !== 'hvst-runner-gw-client') {
+    throw new Error('invalid saved client executable path');
   }
   try {
     await run(binary, 'cleanup');
