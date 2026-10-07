@@ -36,10 +36,12 @@ The action generates a random join token for each run. It is written to
 neither logged nor exposed as an output. Each node is named after its VM ID.
 The installer does not start RKE2, so the action starts
 `rke2-server.service` (or `rke2-agent.service`) and waits until systemd reports
-it active, which happens once the node has joined. While it waits, it logs the
-unit state and the last RKE2 log line every 30 seconds. A node that never joins
-fails the job when `rke2-timeout-seconds` expires, and the last 50 lines of its
-RKE2 log are printed.
+it active: for the server, once its components have started; for an agent, once
+it has registered with the server. While it waits, it logs the unit state and
+the last RKE2 log line every 30 seconds. The action then waits for every node to
+report Ready. A node that does not get there fails the job when
+`rke2-timeout-seconds` expires, and the last 50 lines of its RKE2 log are
+printed.
 
 Outputs are `vm-ids` (JSON array, server first), `server-vm-id`,
 `kubeconfig-path`, `ssh-config-path`, and `private-key-path`. The kubeconfig is

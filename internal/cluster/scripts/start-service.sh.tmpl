@@ -1,14 +1,16 @@
 {{- /*
 Starts the systemd unit named by the data without blocking and waits until it
 is active. RKE2 units are Type=notify with TimeoutStartSec=0, so a plain
-`systemctl start` would wait silently until the node has joined, which may be
-forever. The loop reports progress every 30 seconds and fails at once if
-systemd gives up on the unit; otherwise the caller's timeout ends it.
+`systemctl start` would wait silently, possibly forever, until the unit
+signals readiness: for RKE2, when the server has started or the agent has
+registered with the server. Node readiness is checked separately. The loop
+reports progress every 30 seconds and fails at once if systemd gives up on the
+unit; otherwise the caller's timeout ends it.
 */ -}}
 
 {{define "start-service" -}}
 unit={{shq .}}
-echo "starting $unit (this waits until the node has joined)"
+echo "starting $unit and waiting until it is active"
 systemctl enable --now --no-block "$unit" </dev/null
 waited=0
 while :; do
