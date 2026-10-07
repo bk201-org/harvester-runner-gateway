@@ -46,18 +46,23 @@ type vmCluster struct {
 	Statuses                    []client.VMStatus
 }
 
+// kubeOperations maps the action operations that install Kubernetes to their
+// distribution.
+var kubeOperations = map[string]*distribution{"create-k3s": &k3sDist, "create-rke2": &rke2Dist}
+
 func Run(ctx context.Context, operation string, getenv func(string) string) error {
-	if operation != "create" && operation != "create-k3s" && operation != "cleanup" {
+	dist := kubeOperations[operation]
+	if operation != "create" && dist == nil && operation != "cleanup" {
 		return fmt.Errorf("unknown operation %q", operation)
 	}
-	if operation == "create" || operation == "create-k3s" {
+	if operation == "create" || dist != nil {
 		opt, err := readOptions(getenv)
 		if err != nil {
 			return err
 		}
-		var k3s k3sOptions
-		if operation == "create-k3s" {
-			if k3s, err = readK3sOptions(getenv); err != nil {
+		var kube installOptions
+		if dist != nil {
+			if kube, err = readInstallOptions(getenv, dist); err != nil {
 				return err
 			}
 		}
@@ -66,10 +71,10 @@ func Run(ctx context.Context, operation string, getenv func(string) string) erro
 			return err
 		}
 		defer api.Close()
-		if operation == "create" {
+		if dist == nil {
 			return create(ctx, api, opt)
 		}
-		return createK3s(ctx, api, opt, k3s, sshRunner{})
+		return createKube(ctx, api, opt, kube, sshRunner{})
 	}
 	statePath := getenv("STATE_cluster_state")
 	if statePath == "" {

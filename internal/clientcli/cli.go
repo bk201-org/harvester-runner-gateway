@@ -35,7 +35,8 @@ const rootHelp = `Usage: hvst-runner-gw-client [global flags] COMMAND
 
 Commands:
   cluster create|status|delete    Manage persistent local VM clusters
-  action create|create-k3s|cleanup Run the GitHub Actions adapter
+  action create|create-k3s|create-rke2|cleanup
+                                 Run the GitHub Actions adapter
   health                         Check gateway health
   ready                          Check Harvester readiness
   quota                          Get repository usage and limits
@@ -110,13 +111,13 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	if args[0] == "action" {
 		if len(args) != 2 || args[1] == "--help" || args[1] == "-h" {
-			fmt.Fprintln(stderr, "Usage: hvst-runner-gw-client action create|create-k3s|cleanup (uses GitHub action environment)")
+			fmt.Fprintln(stderr, "Usage: hvst-runner-gw-client action create|create-k3s|create-rke2|cleanup (uses GitHub action environment)")
 			if len(args) == 2 {
 				return 0
 			}
 			return 2
 		}
-		if args[1] != "create" && args[1] != "create-k3s" && args[1] != "cleanup" {
+		if args[1] != "create" && args[1] != "create-k3s" && args[1] != "create-rke2" && args[1] != "cleanup" {
 			fmt.Fprintln(stderr, "unknown action operation")
 			return 2
 		}

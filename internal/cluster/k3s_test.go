@@ -37,9 +37,9 @@ func (f *fakeRunner) Run(_ context.Context, _, host string, root bool, script st
 			f.sshFailures[host]--
 			return "", errors.New("connection refused")
 		}
-	case strings.Contains(script, "get.k3s.io"):
+	case isInstall(script):
 		return "[INFO] installed", f.installError[host]
-	case strings.HasPrefix(script, "k3s kubectl get nodes"):
+	case strings.Contains(script, " get nodes --no-headers"):
 		out := f.nodesOutput[0]
 		if len(f.nodesOutput) > 1 {
 			f.nodesOutput = f.nodesOutput[1:]
@@ -54,11 +54,15 @@ func (f *fakeRunner) Run(_ context.Context, _, host string, root bool, script st
 func (f *fakeRunner) installs() []remoteCall {
 	var out []remoteCall
 	for _, call := range f.calls {
-		if strings.Contains(call.script, "get.k3s.io") {
+		if isInstall(call.script) {
 			out = append(out, call)
 		}
 	}
 	return out
+}
+
+func isInstall(script string) bool {
+	return strings.Contains(script, "== download ==")
 }
 
 func testCluster(t *testing.T) vmCluster {
@@ -80,11 +84,11 @@ func fastPolling(t *testing.T) {
 
 func TestReadK3sOptions(t *testing.T) {
 	get := func(env map[string]string) func(string) string { return func(k string) string { return env[k] } }
-	opt, err := readK3sOptions(get(map[string]string{}))
+	opt, err := readInstallOptions(get(map[string]string{}), &k3sDist)
 	if err != nil || opt.Version != "" || opt.SSHTimeout != 300*time.Second || opt.InstallTimeout != 900*time.Second {
 		t.Fatalf("defaults = %#v, %v", opt, err)
 	}
-	opt, err = readK3sOptions(get(map[string]string{"INPUT_K3S-VERSION": "v1.35.2+k3s1", "INPUT_SSH-TIMEOUT-SECONDS": "60"}))
+	opt, err = readInstallOptions(get(map[string]string{"INPUT_K3S-VERSION": "v1.35.2+k3s1", "INPUT_SSH-TIMEOUT-SECONDS": "60"}), &k3sDist)
 	if err != nil || opt.Version != "v1.35.2+k3s1" || opt.SSHTimeout != time.Minute {
 		t.Fatalf("custom = %#v, %v", opt, err)
 	}
@@ -95,7 +99,7 @@ func TestReadK3sOptions(t *testing.T) {
 		{"INPUT_K3S-TIMEOUT-SECONDS": "abc"},
 		{"INPUT_K3S-TIMEOUT-SECONDS": "86401"},
 	} {
-		if _, err := readK3sOptions(get(env)); err == nil {
+		if _, err := readInstallOptions(get(env), &k3sDist); err == nil {
 			t.Fatalf("accepted %v", env)
 		}
 	}
@@ -113,7 +117,7 @@ func TestSetupK3sInstallsServerThenAgents(t *testing.T) {
 		},
 		kubeconfig: "server: https://127.0.0.1:6443\n",
 	}
-	path, err := setupK3s(context.Background(), runner, cluster, k3sOptions{
+	path, err := setupKube(context.Background(), runner, cluster, installOptions{Dist: &k3sDist,
 		Version: "v1.35.2+k3s1", SSHTimeout: time.Second, InstallTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +173,7 @@ func TestSetupK3sInstallsServerThenAgents(t *testing.T) {
 func TestSetupK3sReportsInstallFailure(t *testing.T) {
 	fastPolling(t)
 	runner := &fakeRunner{installError: map[string]error{"ci-vm-00000002": errors.New("exit status 1")}}
-	_, err := setupK3s(context.Background(), runner, testCluster(t), k3sOptions{SSHTimeout: time.Second, InstallTimeout: time.Second})
+	_, err := setupKube(context.Background(), runner, testCluster(t), installOptions{Dist: &k3sDist, SSHTimeout: time.Second, InstallTimeout: time.Second})
 	if err == nil || !strings.Contains(err.Error(), "agent on ci-vm-00000002") {
 		t.Fatalf("error = %v", err)
 	}
@@ -189,7 +193,7 @@ func TestSetupK3sTimeouts(t *testing.T) {
 	fastPolling(t)
 	cluster := testCluster(t)
 	runner := &fakeRunner{sshFailures: map[string]int{"ci-vm-00000001": 1 << 30}}
-	_, err := setupK3s(context.Background(), runner, cluster, k3sOptions{SSHTimeout: 20 * time.Millisecond, InstallTimeout: time.Second})
+	_, err := setupKube(context.Background(), runner, cluster, installOptions{Dist: &k3sDist, SSHTimeout: 20 * time.Millisecond, InstallTimeout: time.Second})
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "SSH to ci-vm-00000001") {
 		t.Fatalf("SSH timeout error = %v", err)
 	}
@@ -197,7 +201,7 @@ func TestSetupK3sTimeouts(t *testing.T) {
 		t.Fatal("installed before SSH was ready")
 	}
 	runner = &fakeRunner{nodesOutput: []string{"ci-vm-00000001 Ready <none> 1m v1\n"}}
-	_, err = setupK3s(context.Background(), runner, cluster, k3sOptions{SSHTimeout: time.Second, InstallTimeout: 30 * time.Millisecond})
+	_, err = setupKube(context.Background(), runner, cluster, installOptions{Dist: &k3sDist, SSHTimeout: time.Second, InstallTimeout: 30 * time.Millisecond})
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "ci-vm-00000002, ci-vm-00000003") {
 		t.Fatalf("Ready timeout error = %v", err)
 	}
@@ -207,12 +211,12 @@ func TestSetupK3sRejectsUnsafeInput(t *testing.T) {
 	fastPolling(t)
 	cluster := testCluster(t)
 	cluster.Statuses[1].ID = "Bad_Name"
-	if _, err := setupK3s(context.Background(), &fakeRunner{}, cluster, k3sOptions{SSHTimeout: time.Second, InstallTimeout: time.Second}); err == nil {
+	if _, err := setupKube(context.Background(), &fakeRunner{}, cluster, installOptions{Dist: &k3sDist, SSHTimeout: time.Second, InstallTimeout: time.Second}); err == nil {
 		t.Fatal("accepted an invalid node name")
 	}
 	cluster = testCluster(t)
 	runner := &fakeRunner{nodesOutput: []string{"ci-vm-00000001 Ready\nci-vm-00000002 Ready\nci-vm-00000003 Ready\n"}, kubeconfig: "server: https://example:6443\n"}
-	if _, err := setupK3s(context.Background(), runner, cluster, k3sOptions{SSHTimeout: time.Second, InstallTimeout: time.Second}); err == nil {
+	if _, err := setupKube(context.Background(), runner, cluster, installOptions{Dist: &k3sDist, SSHTimeout: time.Second, InstallTimeout: time.Second}); err == nil {
 		t.Fatal("accepted a kubeconfig without the loopback server")
 	}
 	if _, err := os.Stat(filepath.Join(cluster.Dir, "kubeconfig")); !os.IsNotExist(err) {
@@ -267,7 +271,7 @@ func TestCreateK3sWritesOutputs(t *testing.T) {
 	opt := options{TempDir: temp, StateFile: stateOutput, OutputFile: resultOutput,
 		Username: "ci", Count: 2, WaitTimeout: time.Second,
 		Request: client.VMRequest{Image: "default/ubuntu", Network: "default/net", CPU: 2, Memory: "4Gi", BootDiskSize: "20Gi"}}
-	if err := createK3s(context.Background(), api, opt, k3sOptions{SSHTimeout: time.Second, InstallTimeout: time.Second}, runner); err != nil {
+	if err := createKube(context.Background(), api, opt, installOptions{Dist: &k3sDist, SSHTimeout: time.Second, InstallTimeout: time.Second}, runner); err != nil {
 		t.Fatal(err)
 	}
 	outputs, err := os.ReadFile(resultOutput)
@@ -285,7 +289,7 @@ func TestCreateK3sWritesOutputs(t *testing.T) {
 }
 
 func TestInstallScriptIsVerboseAndKeepsTokenPrivate(t *testing.T) {
-	script := installScript("server", "v1.35.2+k3s1", "s3cret-token", "vm-1", "")
+	script := installScript(&k3sDist, "server", "v1.35.2+k3s1", "s3cret-token", "vm-1", "")
 	for _, want := range []string{"== network ==", "getent hosts get.k3s.io", "response headers", "response body", "attempt $attempt failed: HTTP status $code", "== install k3s server =="} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("install script lacks %q: %s", want, script)
@@ -344,7 +348,7 @@ func TestInstallScriptReportsDownloadFailure(t *testing.T) {
 	}
 	cmd := exec.Command(bash, "-s")
 	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd.Stdin = strings.NewReader(installScript("server", "", "tok", "vm-1", ""))
+	cmd.Stdin = strings.NewReader(installScript(&k3sDist, "server", "", "tok", "vm-1", ""))
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("script succeeded despite HTTP 500: %s", out)

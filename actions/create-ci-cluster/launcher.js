@@ -149,7 +149,7 @@ function run(binary, command) {
 }
 
 async function main(command = 'create') {
-  if (command !== 'create' && command !== 'create-k3s') throw new Error(`unknown cluster command ${command}`);
+  if (!['create', 'create-k3s', 'create-rke2'].includes(command)) throw new Error(`unknown cluster command ${command}`);
   const temp = process.env.RUNNER_TEMP;
   if (!temp) throw new Error('RUNNER_TEMP is required');
   const dir = fs.mkdtempSync(path.join(temp, 'hvst-cluster-bin-'));

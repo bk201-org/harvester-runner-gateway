@@ -114,6 +114,8 @@ test('main passes the requested command to the client executable', async () => {
     });
     await main('create-k3s');
     assert.equal(fs.readFileSync(marker, 'utf8'), 'action:create-k3s');
+    await main('create-rke2');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'action:create-rke2');
     await assert.rejects(main('bogus'), /unknown cluster command/);
   } finally {
     process.env = previous;

@@ -279,7 +279,8 @@ For manual workstation setup, copy the token privately and create `~/.config/har
 
 - [Create CI VM cluster](actions/create-ci-cluster/README.md) (`actions/create-ci-cluster`): Create identical VMs, write a job-local SSH config, and delete recorded VMs after the job.
 - [Create CI k3s cluster](actions/create-k3s-cluster/README.md) (`actions/create-k3s-cluster`): Create VMs, install k3s over SSH (first VM server, others agents), save a kubeconfig, and delete the VMs after the job.
+- [Create CI RKE2 cluster](actions/create-rke2-cluster/README.md) (`actions/create-rke2-cluster`): The same as the k3s action, but installs RKE2.
 
-Both actions use `hvst-runner-gw-client` to manage GitHub inputs and job cleanup. Run `make cluster-release` to build Linux amd64/arm64 binaries and checksums. Each action downloads the caller's release URL, or the latest action-repository release when no URL or local path is given.
+These actions use `hvst-runner-gw-client` to manage GitHub inputs and job cleanup. Run `make cluster-release` to build Linux amd64/arm64 binaries and checksums. Each action downloads the caller's release URL, or the latest action-repository release when no URL or local path is given.
 
 Run `make test-cluster-action` for an offline command smoke test. To exercise the command against a gateway with the smoke config, run `GATEWAY_SMOKE_CONFIG=./kf/smoke.json ./scripts/cluster-smoke.sh`.

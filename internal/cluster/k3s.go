@@ -20,22 +20,62 @@ import (
 )
 
 const (
-	k3sInstallURL  = "https://get.k3s.io"
-	k3sKubeconfig  = "/etc/rancher/k3s/k3s.yaml"
-	k3sAPIPort     = "6443"
-	maxRemoteError = 2000
+	kubeAPIPort       = "6443"
+	loopbackAPIServer = "https://127.0.0.1:" + kubeAPIPort
+	maxRemoteError    = 2000
 )
 
 var (
-	k3sVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?\+k3s[0-9]+$`)
-	nodeNamePattern   = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
+	nodeNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 
 	sshPollInterval           = 5 * time.Second
 	k3sPollInterval           = 5 * time.Second
 	logWriter       io.Writer = os.Stderr
 )
 
-type k3sOptions struct {
+// distribution describes how to install a Kubernetes distribution over SSH.
+// The first VM becomes the server and every other VM joins it as an agent.
+type distribution struct {
+	name           string
+	versionInput   string
+	timeoutInput   string
+	defaultTimeout string
+	versionPattern *regexp.Regexp
+	versionExample string
+	installURL     string
+	kubeconfig     string
+	// nodesCommand runs on the server as root and lists nodes without headers.
+	nodesCommand string
+	serverUnit   string
+	agentUnit    string
+	// joinPort is where agents register with the server.
+	joinPort string
+	// environment returns script lines that run before the installer is
+	// downloaded; install returns the lines that run it. Neither may print
+	// the token.
+	environment func(role, version, token, nodeName, joinURL string) string
+	install     func(role, version, token, nodeName, joinURL string) string
+}
+
+var k3sDist = distribution{
+	name:           "k3s",
+	versionInput:   "INPUT_K3S-VERSION",
+	timeoutInput:   "INPUT_K3S-TIMEOUT-SECONDS",
+	defaultTimeout: "900",
+	versionPattern: regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?\+k3s[0-9]+$`),
+	versionExample: "v1.35.2+k3s1",
+	installURL:     "https://get.k3s.io",
+	kubeconfig:     "/etc/rancher/k3s/k3s.yaml",
+	nodesCommand:   "k3s kubectl get nodes --no-headers\n",
+	serverUnit:     "k3s",
+	agentUnit:      "k3s-agent",
+	joinPort:       kubeAPIPort,
+	environment:    k3sEnvironment,
+	install:        k3sInstall,
+}
+
+type installOptions struct {
+	Dist           *distribution
 	Version        string
 	SSHTimeout     time.Duration
 	InstallTimeout time.Duration
@@ -114,17 +154,17 @@ func (w *linePrefixWriter) Flush() {
 	}
 }
 
-func readK3sOptions(getenv func(string) string) (k3sOptions, error) {
-	opt := k3sOptions{Version: getenv("INPUT_K3S-VERSION")}
-	if opt.Version != "" && !k3sVersionPattern.MatchString(opt.Version) {
-		return opt, fmt.Errorf("k3s-version must look like v1.35.2+k3s1")
+func readInstallOptions(getenv func(string) string, dist *distribution) (installOptions, error) {
+	opt := installOptions{Dist: dist, Version: getenv(dist.versionInput)}
+	if opt.Version != "" && !dist.versionPattern.MatchString(opt.Version) {
+		return opt, fmt.Errorf("%s must look like %s", inputName(dist.versionInput), dist.versionExample)
 	}
 	for _, field := range []struct {
 		name, fallback string
 		target         *time.Duration
 	}{
 		{"INPUT_SSH-TIMEOUT-SECONDS", "300", &opt.SSHTimeout},
-		{"INPUT_K3S-TIMEOUT-SECONDS", "900", &opt.InstallTimeout},
+		{dist.timeoutInput, dist.defaultTimeout, &opt.InstallTimeout},
 	} {
 		raw := getenv(field.name)
 		if raw == "" {
@@ -132,22 +172,25 @@ func readK3sOptions(getenv func(string) string) (k3sOptions, error) {
 		}
 		seconds, err := strconv.Atoi(raw)
 		if err != nil || seconds < 1 || seconds > 86400 {
-			return opt, fmt.Errorf("%s must be between 1 and 86400",
-				strings.ToLower(strings.TrimPrefix(field.name, "INPUT_")))
+			return opt, fmt.Errorf("%s must be between 1 and 86400", inputName(field.name))
 		}
 		*field.target = time.Duration(seconds) * time.Second
 	}
 	return opt, nil
 }
 
-// createK3s creates the VMs, then installs k3s over SSH: the first VM becomes
-// the server and every other VM joins it as an agent.
-func createK3s(ctx context.Context, api vmAPI, opt options, k3s k3sOptions, runner remoteRunner) error {
+func inputName(env string) string {
+	return strings.ToLower(strings.TrimPrefix(env, "INPUT_"))
+}
+
+// createKube creates the VMs, then installs the distribution over SSH: the
+// first VM becomes the server and every other VM joins it as an agent.
+func createKube(ctx context.Context, api vmAPI, opt options, kube installOptions, runner remoteRunner) error {
 	cluster, err := createVMs(ctx, api, opt)
 	if err != nil {
 		return err
 	}
-	kubeconfig, err := setupK3s(ctx, runner, cluster, k3s)
+	kubeconfig, err := setupKube(ctx, runner, cluster, kube)
 	if err != nil {
 		return err
 	}
@@ -159,7 +202,8 @@ func createK3s(ctx context.Context, api vmAPI, opt options, k3s k3sOptions, runn
 	return nil
 }
 
-func setupK3s(ctx context.Context, runner remoteRunner, cluster vmCluster, opt k3sOptions) (string, error) {
+func setupKube(ctx context.Context, runner remoteRunner, cluster vmCluster, opt installOptions) (string, error) {
+	dist := opt.Dist
 	if len(cluster.Statuses) == 0 {
 		return "", errors.New("no VMs to configure")
 	}
@@ -188,38 +232,38 @@ func setupK3s(ctx context.Context, runner remoteRunner, cluster vmCluster, opt k
 	}
 	installCtx, cancelInstall := context.WithTimeout(ctx, opt.InstallTimeout)
 	defer cancelInstall()
-	serverURL := "https://" + net.JoinHostPort(serverIP, k3sAPIPort)
+	serverURL := "https://" + net.JoinHostPort(serverIP, kubeAPIPort)
+	joinURL := "https://" + net.JoinHostPort(serverIP, dist.joinPort)
 	for i, status := range cluster.Statuses {
-		role, url := "agent", serverURL
+		role, url := "agent", joinURL
 		if i == 0 {
 			role, url = "server", ""
 		}
-		logf("installing k3s %s on %s (version %s, server %s)", role, status.ID, versionLabel(opt.Version), serverURL)
+		logf("installing %s %s on %s (version %s, server %s)", dist.name, role, status.ID, versionLabel(opt.Version), joinURL)
 		started := time.Now()
 		_, err := runner.Run(installCtx, cluster.ConfigPath, status.ID, true,
-			installScript(role, opt.Version, token, status.ID, url), logWriter)
+			installScript(dist, role, opt.Version, token, status.ID, url), logWriter)
 		if err != nil {
-			logf("k3s %s install on %s failed after %s", role, status.ID, time.Since(started).Round(time.Second))
-			diagnose(runner, cluster.ConfigPath, status.ID, role)
-			return "", fmt.Errorf("install k3s %s on %s: %w", role, status.ID, err)
+			logf("%s %s install on %s failed after %s", dist.name, role, status.ID, time.Since(started).Round(time.Second))
+			diagnose(runner, dist, cluster.ConfigPath, status.ID, role)
+			return "", fmt.Errorf("install %s %s on %s: %w", dist.name, role, status.ID, err)
 		}
-		logf("k3s %s installed on %s in %s", role, status.ID, time.Since(started).Round(time.Second))
+		logf("%s %s installed on %s in %s", dist.name, role, status.ID, time.Since(started).Round(time.Second))
 	}
 	logf("waiting for %d node(s) to become Ready", len(cluster.Statuses))
 
-	if err := waitNodesReady(installCtx, runner, cluster); err != nil {
+	if err := waitNodesReady(installCtx, runner, dist, cluster); err != nil {
 		return "", err
 	}
-	logf("reading kubeconfig from %s:%s", cluster.Statuses[0].ID, k3sKubeconfig)
-	out, err := runner.Run(installCtx, cluster.ConfigPath, cluster.Statuses[0].ID, true, "cat "+shellQuote(k3sKubeconfig)+"\n", nil)
+	logf("reading kubeconfig from %s:%s", cluster.Statuses[0].ID, dist.kubeconfig)
+	out, err := runner.Run(installCtx, cluster.ConfigPath, cluster.Statuses[0].ID, true, "cat "+shellQuote(dist.kubeconfig)+"\n", nil)
 	if err != nil {
 		return "", fmt.Errorf("read kubeconfig from %s: %w", cluster.Statuses[0].ID, err)
 	}
-	const local = "https://127.0.0.1:" + k3sAPIPort
-	if !strings.Contains(out, local) {
-		return "", fmt.Errorf("kubeconfig from %s does not reference %s", cluster.Statuses[0].ID, local)
+	if !strings.Contains(out, loopbackAPIServer) {
+		return "", fmt.Errorf("kubeconfig from %s does not reference %s", cluster.Statuses[0].ID, loopbackAPIServer)
 	}
-	out = strings.ReplaceAll(out, local, serverURL)
+	out = strings.ReplaceAll(out, loopbackAPIServer, serverURL)
 	path := filepath.Join(cluster.Dir, "kubeconfig")
 	if err := os.WriteFile(path, []byte(out), 0600); err != nil {
 		return "", fmt.Errorf("save kubeconfig: %w", err)
@@ -250,16 +294,16 @@ func waitSSH(ctx context.Context, runner remoteRunner, sshConfig, id string) err
 	return nil
 }
 
-func waitNodesReady(ctx context.Context, runner remoteRunner, cluster vmCluster) error {
+func waitNodesReady(ctx context.Context, runner remoteRunner, dist *distribution, cluster vmCluster) error {
 	server := cluster.Statuses[0].ID
 	var last error
 	var missing []string
 	var lastTable string
 	for {
-		out, err := runner.Run(ctx, cluster.ConfigPath, server, true, "k3s kubectl get nodes --no-headers\n", nil)
+		out, err := runner.Run(ctx, cluster.ConfigPath, server, true, dist.nodesCommand, nil)
 		last = err
 		if err != nil {
-			logf("k3s is not answering on %s yet: %v", server, err)
+			logf("%s is not answering on %s yet: %v", dist.name, server, err)
 		} else {
 			if table := strings.TrimSpace(out); table != lastTable {
 				lastTable = table
@@ -283,10 +327,10 @@ func waitNodesReady(ctx context.Context, runner remoteRunner, cluster vmCluster)
 				if i == 0 {
 					role = "server"
 				}
-				diagnose(runner, cluster.ConfigPath, status.ID, role)
+				diagnose(runner, dist, cluster.ConfigPath, status.ID, role)
 			}
-			return fmt.Errorf("k3s nodes did not become Ready (waiting for %s): %w (last error: %v)",
-				strings.Join(missing, ", "), ctx.Err(), last)
+			return fmt.Errorf("%s nodes did not become Ready (waiting for %s): %w (last error: %v)",
+				dist.name, strings.Join(missing, ", "), ctx.Err(), last)
 		case <-time.After(k3sPollInterval):
 		}
 	}
@@ -305,10 +349,10 @@ func readyNodes(output string) map[string]bool {
 
 // diagnose prints the recent service log of a node. It is best effort and uses
 // its own deadline because the caller's context may already have expired.
-func diagnose(runner remoteRunner, sshConfig, id, role string) {
-	unit := "k3s"
+func diagnose(runner remoteRunner, dist *distribution, sshConfig, id, role string) {
+	unit := dist.serverUnit
 	if role == "agent" {
-		unit = "k3s-agent"
+		unit = dist.agentUnit
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -320,16 +364,11 @@ func diagnose(runner remoteRunner, sshConfig, id, role string) {
 	logf("last %s log lines from %s:\n%s", unit, id, strings.TrimSpace(out))
 }
 
-func installScript(role, version, token, nodeName, serverURL string) string {
+func installScript(dist *distribution, role, version, token, nodeName, joinURL string) string {
+	host := strings.TrimPrefix(dist.installURL, "https://")
 	var script strings.Builder
 	script.WriteString("set -euo pipefail\n")
-	fmt.Fprintf(&script, "export K3S_TOKEN=%s\nexport K3S_NODE_NAME=%s\n", shellQuote(token), shellQuote(nodeName))
-	if version != "" {
-		fmt.Fprintf(&script, "export INSTALL_K3S_VERSION=%s\n", shellQuote(version))
-	}
-	if serverURL != "" {
-		fmt.Fprintf(&script, "export K3S_URL=%s\n", shellQuote(serverURL))
-	}
+	script.WriteString(dist.environment(role, version, token, nodeName, joinURL))
 	// Redirect stdin so no command consumes the rest of this script. Nothing
 	// below prints the token, so the output is safe to stream to the job log.
 	script.WriteString(`echo "== host =="
@@ -342,15 +381,15 @@ ip -br addr 2>&1 || true
 ip route 2>&1 || true
 grep -v '^#' /etc/resolv.conf 2>&1 || true
 env | grep -i '^\(http\|https\|no\)_proxy=' || echo "no proxy environment variables"
-getent hosts get.k3s.io || echo "DNS lookup for get.k3s.io failed"
+getent hosts ` + host + ` || echo "DNS lookup for ` + host + ` failed"
 echo "== download =="
 installer=$(mktemp)
 headers=$(mktemp)
 trap 'rm -f "$installer" "$headers"' EXIT
 downloaded=false
 for attempt in 1 2 3 4 5; do
-  echo "downloading ` + k3sInstallURL + ` (attempt $attempt/5)"
-  code=$(curl -sS -L --connect-timeout 15 --max-time 120 -D "$headers" -o "$installer" -w '%{http_code}' ` + shellQuote(k3sInstallURL) + ` </dev/null) || code=000
+  echo "downloading ` + dist.installURL + ` (attempt $attempt/5)"
+  code=$(curl -sS -L --connect-timeout 15 --max-time 120 -D "$headers" -o "$installer" -w '%{http_code}' ` + shellQuote(dist.installURL) + ` </dev/null) || code=000
   if [ "$code" = 200 ]; then
     downloaded=true
     break
@@ -367,14 +406,32 @@ for attempt in 1 2 3 4 5; do
   fi
 done
 if [ "$downloaded" != true ]; then
-  echo "could not download the k3s installer" >&2
+  echo "could not download the ` + dist.name + ` installer" >&2
   exit 1
 fi
 echo "downloaded installer: $(wc -c < "$installer") bytes"
-echo "== install k3s ` + role + ` =="
+echo "== install ` + dist.name + ` ` + role + ` =="
 `)
-	fmt.Fprintf(&script, "sh \"$installer\" %s </dev/null\n", role)
+	script.WriteString(dist.install(role, version, token, nodeName, joinURL))
 	return script.String()
+}
+
+// k3sEnvironment exports the k3s installer settings; get.k3s.io also starts
+// the service.
+func k3sEnvironment(_, version, token, nodeName, joinURL string) string {
+	var script strings.Builder
+	fmt.Fprintf(&script, "export K3S_TOKEN=%s\nexport K3S_NODE_NAME=%s\n", shellQuote(token), shellQuote(nodeName))
+	if version != "" {
+		fmt.Fprintf(&script, "export INSTALL_K3S_VERSION=%s\n", shellQuote(version))
+	}
+	if joinURL != "" {
+		fmt.Fprintf(&script, "export K3S_URL=%s\n", shellQuote(joinURL))
+	}
+	return script.String()
+}
+
+func k3sInstall(role, _, _, _, _ string) string {
+	return fmt.Sprintf("sh \"$installer\" %s </dev/null\n", role)
 }
 
 func versionLabel(version string) string {
