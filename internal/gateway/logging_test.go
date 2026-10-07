@@ -33,6 +33,8 @@ func TestRequestLogContainsResponseMetadataWithoutSecrets(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/healthz?token=query-secret", nil)
 	request.Header.Set("Authorization", "Bearer header-secret")
+	request.Header.Set("X-Forwarded-For", "198.51.100.7")
+	request.RemoteAddr = "192.0.2.10:43210"
 	response := httptest.NewRecorder()
 	s.Handler.ServeHTTP(response, request)
 
@@ -49,7 +51,8 @@ func TestRequestLogContainsResponseMetadataWithoutSecrets(t *testing.T) {
 	}
 	record := records[0]
 	if record["msg"] != "request completed" || record["method"] != http.MethodGet ||
-		record["path"] != "/healthz" || record["status"] != float64(http.StatusNoContent) {
+		record["path"] != "/healthz" || record["remote_ip"] != "192.0.2.10" ||
+		record["status"] != float64(http.StatusNoContent) {
 		t.Fatalf("unexpected request log: %#v", record)
 	}
 	if _, ok := record["duration_ms"]; !ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -41,6 +42,16 @@ func (w *responseLogger) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// remoteIP returns the address of the directly connected peer. Forwarding
+// headers are ignored because clients can set them freely.
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func normalizeLogger(logger *slog.Logger) *slog.Logger {
 	if logger != nil {
 		return logger
@@ -66,6 +77,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		s.logger.LogAttrs(r.Context(), level, "request completed",
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
+			slog.String("remote_ip", remoteIP(r)),
 			slog.Int("status", response.status),
 			slog.Int("response_bytes", response.bytes),
 			slog.Int64("duration_ms", time.Since(started).Milliseconds()))
