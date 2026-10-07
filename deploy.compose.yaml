@@ -1,0 +1,44 @@
+# Docker Compose project for the gateway on a remote host. deploy.sh uploads
+# this file as runner-gateway/compose.yaml and writes the .env file next to it.
+# Paths are relative to that directory and match config.example.yaml inside
+# the container.
+name: harvester-runner-gateway
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-bk201z/harvester-runner-gateway:dev}
+    container_name: ${GATEWAY_CONTAINER_NAME:-harvester-runner-gateway}
+    # Compose pulls before replacing the container, so a pull failure keeps
+    # the current container running.
+    pull_policy: always
+    restart: unless-stopped
+    # Run as the host user that owns the mounted files.
+    user: "${GATEWAY_UID:?set GATEWAY_UID in .env}:${GATEWAY_GID:?set GATEWAY_GID in .env}"
+    working_dir: /
+    command: ["--config", "/etc/gateway/config.yaml"]
+    ports:
+      - "${GATEWAY_HOST_PORT:-8443}:8443"
+    volumes:
+      - type: bind
+        source: ./config.yaml
+        target: /etc/gateway/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./tls
+        target: /run/secrets/gateway
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./harvester
+        target: /run/secrets/harvester
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./data
+        target: /var/lib/harvester-runner-gateway
+        bind:
+          create_host_path: false

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_HOST=${REMOTE_HOST:-ubuntu@remote-host}
 PROFILE=${PROFILE:-hal-harvester-ci}
 GATEWAY_HOST=${GATEWAY_HOST:-runner-gateway.hal.internal}
 GATEWAY_HOST_PORT=${GATEWAY_HOST_PORT:-8443}
@@ -11,6 +10,11 @@ DEPLOY_DIR="$TOP_DIR/deploy"
 REMOTE_WORK_DIR=runner-gateway
 DEVELOPER_IDS=()
 
+usage() {
+  printf 'Usage: %s REMOTE_HOST\n' "$0" >&2
+  printf 'REMOTE_HOST is the SSH destination, such as ubuntu@gateway.example.com.\n' >&2
+}
+
 log() {
   printf '[deploy] %s\n' "$*" >&2
 }
@@ -18,7 +22,7 @@ log() {
 check_inputs() {
   local file
   for file in \
-    "$TOP_DIR/docker-run.sh" \
+    "$TOP_DIR/deploy.compose.yaml" \
     "$DEPLOY_DIR/$PROFILE.config.yaml" \
     "$DEPLOY_DIR/$PROFILE.kubeconfig"; do
     if [[ ! -f $file ]]; then
@@ -34,64 +38,17 @@ create_remote_dirs() {
     'umask 077; mkdir -p runner-gateway/tls/developers runner-gateway/harvester runner-gateway/data; chmod 700 runner-gateway runner-gateway/tls runner-gateway/tls/developers runner-gateway/harvester runner-gateway/data'
 }
 
-sync_runner_scripts() {
-  RUNNER_SCRIPTS_DIR=$(mktemp -d)
-  trap 'rm -rf -- "$RUNNER_SCRIPTS_DIR"' EXIT
-
-  cat > "$RUNNER_SCRIPTS_DIR/start.sh" <<'DEPLOY_START_SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-WORK_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-
-exec "$WORK_DIR/docker-run.sh" \
-  "$WORK_DIR/config.yaml" \
-  "$WORK_DIR/tls" \
-  "$WORK_DIR/harvester" \
-  "$WORK_DIR/data"
-DEPLOY_START_SH
-
-  cat > "$RUNNER_SCRIPTS_DIR/stop.sh" <<'DEPLOY_STOP_SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-container_name=${GATEWAY_CONTAINER_NAME:-harvester-runner-gateway}
-running_names=$(docker container ls --format '{{.Names}}')
-
-while IFS= read -r running_name; do
-  if [[ $running_name == "$container_name" ]]; then
-    printf '[stop] Stopping %s\n' "$container_name" >&2
-    exec docker container stop "$container_name"
-  fi
-done <<< "$running_names"
-
-printf '[stop] %s is not running\n' "$container_name" >&2
-DEPLOY_STOP_SH
-
-  cat > "$RUNNER_SCRIPTS_DIR/restart.sh" <<'DEPLOY_RESTART_SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-WORK_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-
-printf '[restart] Pulling and replacing the gateway container\n' >&2
-exec "$WORK_DIR/start.sh"
-DEPLOY_RESTART_SH
-
-  chmod 755 "$RUNNER_SCRIPTS_DIR/"*.sh
-  for script in start.sh stop.sh restart.sh; do
-    log "Uploading $script"
-    rsync -a --chmod=F755 "$RUNNER_SCRIPTS_DIR/$script" \
-      "$REMOTE_HOST:$REMOTE_WORK_DIR/"
-  done
-
-  rm -rf -- "$RUNNER_SCRIPTS_DIR"
-  trap - EXIT
+write_remote_env() {
+  log "Writing .env with the remote user's UID and GID"
+  # The container runs as the SSH user so it can read the private files.
+  ssh "$REMOTE_HOST" \
+    'umask 077; printf "GATEWAY_UID=%s\nGATEWAY_GID=%s\n" "$(id -u)" "$(id -g)" > runner-gateway/.env'
 }
 
 sync_files() {
-  log "Uploading docker-run.sh"
-  rsync -a "$TOP_DIR/docker-run.sh" "$REMOTE_HOST:$REMOTE_WORK_DIR/"
+  log "Uploading deploy.compose.yaml as compose.yaml"
+  rsync -a --chmod=F644 "$TOP_DIR/deploy.compose.yaml" \
+    "$REMOTE_HOST:$REMOTE_WORK_DIR/compose.yaml"
   log "Uploading $PROFILE.config.yaml as config.yaml"
   rsync -a --chmod=F600 "$DEPLOY_DIR/$PROFILE.config.yaml" \
     "$REMOTE_HOST:$REMOTE_WORK_DIR/config.yaml"
@@ -114,7 +71,7 @@ ensure_local_tls() {
     TLS_TEMP_DIR=$(mktemp -d "$DEPLOY_DIR/.$PROFILE.tls.XXXXXX")
     trap 'rm -rf -- "$TLS_TEMP_DIR"' EXIT
 
-    openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 30 \
+    openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
       -keyout "$TLS_TEMP_DIR/tls.key" -out "$TLS_TEMP_DIR/tls.crt" \
       -subj "/CN=$GATEWAY_HOST" \
       -addext "subjectAltName=DNS:$GATEWAY_HOST"
@@ -319,6 +276,12 @@ sync_tls() {
 }
 
 main() {
+  if (( $# != 1 )) || [[ -z $1 ]]; then
+    usage
+    exit 2
+  fi
+  REMOTE_HOST=$1
+
   log "Deploying profile $PROFILE to $REMOTE_HOST:$REMOTE_WORK_DIR"
   log "Checking local deployment files"
   check_inputs
@@ -329,7 +292,7 @@ main() {
   ensure_local_smoke_config
   create_remote_dirs
   sync_files
-  sync_runner_scripts
+  write_remote_env
   sync_tls
   sync_developer_tokens
   log "Deployment files are ready on $REMOTE_HOST:$REMOTE_WORK_DIR"

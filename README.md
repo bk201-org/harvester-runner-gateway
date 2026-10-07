@@ -21,19 +21,24 @@ make build
 
 Publish the image to a registry the host can access. Keep config and credentials outside tracked source files at the paths in `config.example.yaml`; create a persistent data directory writable by the host user.
 
-The optional `deploy.sh` copies files to `$HOME/runner-gateway` on the remote host and creates `start.sh`, `stop.sh`, and `restart.sh` there on every deployment. On that host:
+The optional `deploy.sh` copies files to `$HOME/runner-gateway` on the remote host, including `deploy.compose.yaml` as `compose.yaml`. Pass the SSH destination as its only argument:
+
+```sh
+./deploy.sh ubuntu@gateway.example.com
+```
+
+On that host:
 
 ```sh
 cd "$HOME/runner-gateway"
-./start.sh
-docker logs harvester-runner-gateway
+docker compose up -d
+docker compose logs -f
 ```
 
-- `start.sh` resolves config, TLS, Harvester, and data paths relative to its own location. `restart.sh` pulls and replaces the container; `stop.sh` stops it. Both honor `GATEWAY_CONTAINER_NAME`.
-- `docker-run.sh` pulls `GATEWAY_IMAGE` before removing the existing container, then starts the replacement with `--pull=always` and the same data directory. An initial pull failure leaves the container running; a later pull or start failure can interrupt service.
+- `docker compose up -d` pulls `GATEWAY_IMAGE` before replacing the container and keeps the same data directory. A pull failure leaves the current container running. Run it again to deploy a new image; `docker compose down` stops and removes the container.
+- `deploy.sh` rewrites `.env` with the SSH user's `GATEWAY_UID` and `GATEWAY_GID` on every deployment. The container runs as that user, including through sudo. That user needs read access to config, TLS key, smoke token, and kubeconfig, plus write access to SQLite storage.
+- Set `GATEWAY_IMAGE`, `GATEWAY_CONTAINER_NAME`, or `GATEWAY_HOST_PORT` in the shell to override the image, container name (default `harvester-runner-gateway`), or host HTTPS port (default `8443`).
 - The TLS directory contains `tls.crt`, `tls.key`, and optionally `local-smoke-token`. The Harvester directory contains `kubeconfig`. Credentials are mounted read-only.
-- The container runs as the invoking host user, including through sudo. That user needs read access to config, TLS key, smoke token, and kubeconfig, plus write access to SQLite storage.
-- Run `./docker-run.sh --help` for image, container name, and host port overrides.
 
 ### Network and Harvester access
 
@@ -52,7 +57,7 @@ GATEWAY_HOST=gateway.example.com
 TLS_DIR=/secure/path/gateway-tls
 mkdir -p "$TLS_DIR"
 chmod 700 "$TLS_DIR"
-openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 30 \
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
   -keyout "$TLS_DIR/tls.key" -out "$TLS_DIR/tls.crt" \
   -subj "/CN=$GATEWAY_HOST" \
   -addext "subjectAltName=DNS:$GATEWAY_HOST"
@@ -151,7 +156,7 @@ developers:
     tokenFile: /run/secrets/gateway/developers/alice.token
 ```
 
-- With `docker-run.sh`, store tokens under the mounted TLS directory's `developers/` subdirectory.
+- With `deploy.compose.yaml`, store tokens under the mounted TLS directory's `developers/` subdirectory.
 - `deploy.sh` creates missing tokens at `deploy/developers/<id>.token`, reuses them across profiles, and uploads them to `runner-gateway/tls/developers/<id>.token`.
 - The helper requires `tokenFile: /run/secrets/gateway/developers/<id>.token`, yq v4, and jq. It validates credentials before connecting and sets private permissions. It does not restart the gateway or distribute tokens.
 - For manual setup, distribute each token privately. To rotate a helper-managed token, replace its local file and redeploy. To revoke access, remove the developer entry and redeploy. Restart the gateway after either change.
