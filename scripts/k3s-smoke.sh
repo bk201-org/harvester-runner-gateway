@@ -94,8 +94,8 @@ run_cluster_cleanup() {
 
 show_manual_cleanup() {
   printf 'Saved cluster files: %s\n' "$temp_dir"
-  printf 'To delete the VMs and saved files, run:\n'
-  printf '  (cd %q && GATEWAY_SMOKE_CONFIG=%q %q --cleanup %q)\n' \
+  printf '\nTo delete the VMs and saved files, run:\n\n'
+  printf 'cd %q && GATEWAY_SMOKE_CONFIG=%q %q --cleanup %q\n\n' \
     "$PWD" "$smoke_config" "$repo_dir/scripts/k3s-smoke.sh" "$temp_dir"
 }
 
@@ -241,8 +241,10 @@ if command -v kubectl >/dev/null 2>&1; then
 fi
 echo "k3s cluster, kubeconfig, and SSH configuration are valid."
 if [[ "$no_cleanup" == true ]]; then
-  printf 'Use kubectl with: export KUBECONFIG=%q\n' "$kubeconfig"
+  printf 'Use kubectl with:\n\nexport KUBECONFIG=%q\n\n' "$kubeconfig"
+  printf 'Connect with:\n\n'
   while IFS= read -r vm_id; do
-    printf 'Connect with: ssh -F %q %q\n' "$ssh_config" "$vm_id"
+    printf 'ssh -F %q %q\n' "$ssh_config" "$vm_id"
   done < <(jq -r '.[]' <<< "$vm_ids")
+  printf '\n'
 fi

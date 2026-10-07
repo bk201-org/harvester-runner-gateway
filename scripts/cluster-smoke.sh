@@ -90,8 +90,8 @@ run_cluster_cleanup() {
 
 show_manual_cleanup() {
   printf 'Saved cluster files: %s\n' "$temp_dir"
-  printf 'To delete the VMs and saved files, run:\n'
-  printf '  (cd %q && GATEWAY_SMOKE_CONFIG=%q %q --cleanup %q)\n' \
+  printf '\nTo delete the VMs and saved files, run:\n\n'
+  printf 'cd %q && GATEWAY_SMOKE_CONFIG=%q %q --cleanup %q\n\n' \
     "$PWD" "$smoke_config" "$repo_dir/scripts/cluster-smoke.sh" "$temp_dir"
 }
 
@@ -196,7 +196,9 @@ while IFS= read -r vm_id; do
 done < <(jq -r '.[]' <<< "$vm_ids")
 echo "Cluster state, key, and SSH configuration are valid."
 if [[ "$no_cleanup" == true ]]; then
+  printf 'Connect with:\n\n'
   while IFS= read -r vm_id; do
-    printf 'Connect with: ssh -F %q %q\n' "$ssh_config" "$vm_id"
+    printf 'ssh -F %q %q\n' "$ssh_config" "$vm_id"
   done < <(jq -r '.[]' <<< "$vm_ids")
+  printf '\n'
 fi
