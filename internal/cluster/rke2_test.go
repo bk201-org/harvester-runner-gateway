@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,7 +75,7 @@ func TestSetupRKE2InstallsServerThenAgents(t *testing.T) {
 		}
 		want := []string{"https://get.rke2.io", "token: '" + token[1] + "'", "node-name: '" + call.host + "'",
 			"INSTALL_RKE2_TYPE='" + role + "' INSTALL_RKE2_VERSION='v1.35.2+rke2r1' sh \"$installer\" </dev/null",
-			"systemctl enable --now 'rke2-" + role + ".service' </dev/null"}
+			"unit='rke2-" + role + ".service'", `systemctl enable --now --no-block "$unit" </dev/null`}
 		for _, w := range want {
 			if !call.root || !strings.Contains(call.script, w) {
 				t.Fatalf("script %d lacks %q: %s", i, w, call.script)
@@ -204,5 +205,91 @@ func TestRKE2InstallScriptReportsDownloadFailure(t *testing.T) {
 func TestYAMLQuote(t *testing.T) {
 	if got := yamlQuote("a'b"); got != "'a''b'" {
 		t.Fatalf("yamlQuote = %s", got)
+	}
+}
+
+func TestStartServiceScriptWaitsAndReportsProgress(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not available")
+	}
+	run := func(t *testing.T, states string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		// is-active prints one state per call from the states file.
+		tools := map[string]string{
+			"systemctl": "#!/bin/sh\necho \"$*\" >> \"$TOOL_DIR/calls\"\n[ \"$1\" = is-active ] || exit 0\n" +
+				"state=$(head -n 1 \"$TOOL_DIR/states\"); sed -i 1d \"$TOOL_DIR/states\"\necho \"$state\"\n[ \"$state\" = active ]\n",
+			"journalctl": "#!/bin/sh\necho 'level=info msg=\"Waiting to retrieve agent configuration\"'\n",
+			"sleep":      "#!/bin/sh\nexit 0\n",
+		}
+		for name, body := range tools {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, "states"), []byte(states), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(bash, "-s")
+		cmd.Env = append(os.Environ(), "TOOL_DIR="+dir, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		cmd.Stdin = strings.NewReader("set -euo pipefail\n" + startServiceScript("rke2-agent.service"))
+		out, err := cmd.CombinedOutput()
+		calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+		if !strings.HasPrefix(string(calls), "enable --now --no-block rke2-agent.service\n") {
+			t.Fatalf("systemctl calls = %q", calls)
+		}
+		return string(out), err
+	}
+
+	t.Run("active", func(t *testing.T) {
+		out, err := run(t, strings.Repeat("activating\n", 7)+"active\n")
+		if err != nil {
+			t.Fatalf("script failed: %v\n%s", err, out)
+		}
+		for _, want := range []string{"starting rke2-agent.service", "waiting for rke2-agent.service: activating after 30s; last log line:",
+			"Waiting to retrieve agent configuration", "rke2-agent.service is active after 35s"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("output lacks %q:\n%s", want, out)
+			}
+		}
+		if strings.Count(out, "waiting for") != 1 {
+			t.Fatalf("progress is reported more than every 30s:\n%s", out)
+		}
+	})
+	t.Run("failed", func(t *testing.T) {
+		out, err := run(t, "inactive\nactivating\nfailed\nactive\n")
+		if err == nil || !strings.Contains(out, "rke2-agent.service failed after 10s") {
+			t.Fatalf("failed unit was not reported: %v\n%s", err, out)
+		}
+	})
+}
+
+// hangingRunner blocks installs until the context ends, like ssh waiting on a
+// node that never joins.
+type hangingRunner struct{ *fakeRunner }
+
+func (h hangingRunner) Run(ctx context.Context, cfg, host string, root bool, script string, live io.Writer) (string, error) {
+	if isInstall(script) {
+		h.calls = append(h.calls, remoteCall{host, root, script})
+		<-ctx.Done()
+		return "", errors.New("signal: killed")
+	}
+	return h.fakeRunner.Run(ctx, cfg, host, root, script, live)
+}
+
+func TestSetupRKE2ReportsInstallTimeout(t *testing.T) {
+	fastPolling(t)
+	runner := hangingRunner{&fakeRunner{}}
+	_, err := setupKube(context.Background(), runner, testCluster(t), installOptions{Dist: &rke2Dist, SSHTimeout: time.Second, InstallTimeout: 30 * time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "install rke2 server on ci-vm-00000001: rke2-timeout-seconds (30ms) expired: signal: killed") {
+		t.Fatalf("error = %v", err)
+	}
+	var logged bool
+	for _, call := range runner.calls {
+		logged = logged || call.script == "journalctl -u rke2-server -n 50 --no-pager\n"
+	}
+	if !logged {
+		t.Fatal("server logs were not requested after the timeout")
 	}
 }

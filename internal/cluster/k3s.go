@@ -245,6 +245,9 @@ func setupKube(ctx context.Context, runner remoteRunner, cluster vmCluster, opt 
 			installScript(dist, role, opt.Version, token, status.ID, url), logWriter)
 		if err != nil {
 			logf("%s %s install on %s failed after %s", dist.name, role, status.ID, time.Since(started).Round(time.Second))
+			if installCtx.Err() != nil {
+				err = fmt.Errorf("%s (%s) expired: %w", inputName(dist.timeoutInput), opt.InstallTimeout, err)
+			}
 			diagnose(runner, dist, cluster.ConfigPath, status.ID, role)
 			return "", fmt.Errorf("install %s %s on %s: %w", dist.name, role, status.ID, err)
 		}

@@ -34,9 +34,12 @@ Inputs are the same as `create-ci-cluster`, plus:
 The action generates a random join token for each run. It is written to
 `/etc/rancher/rke2/config.yaml` (mode 0600) through SSH standard input and is
 neither logged nor exposed as an output. Each node is named after its VM ID.
-The installer does not start RKE2, so the action runs
-`systemctl enable --now rke2-server.service` (or `rke2-agent.service`), which
-waits until the node has started.
+The installer does not start RKE2, so the action starts
+`rke2-server.service` (or `rke2-agent.service`) and waits until systemd reports
+it active, which happens once the node has joined. While it waits, it logs the
+unit state and the last RKE2 log line every 30 seconds. A node that never joins
+fails the job when `rke2-timeout-seconds` expires, and the last 50 lines of its
+RKE2 log are printed.
 
 Outputs are `vm-ids` (JSON array, server first), `server-vm-id`,
 `kubeconfig-path`, `ssh-config-path`, and `private-key-path`. The kubeconfig is
