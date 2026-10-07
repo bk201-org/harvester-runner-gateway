@@ -36,6 +36,7 @@ docker compose logs -f
 ```
 
 - `docker compose up -d` pulls `GATEWAY_IMAGE` before replacing the container and keeps the same data directory. A pull failure leaves the current container running. Run it again to deploy a new image; `docker compose down` stops and removes the container.
+- Container logs use the `json-file` driver and rotate at 10 MB, keeping five files.
 - `deploy.sh` rewrites `.env` with the SSH user's `GATEWAY_UID` and `GATEWAY_GID` on every deployment. The container runs as that user, including through sudo. That user needs read access to config, TLS key, smoke token, and kubeconfig, plus write access to SQLite storage.
 - Set `GATEWAY_IMAGE`, `GATEWAY_CONTAINER_NAME`, or `GATEWAY_HOST_PORT` in the shell to override the image, container name (default `harvester-runner-gateway`), or host HTTPS port (default `8443`).
 - The TLS directory contains `tls.crt`, `tls.key`, and optionally `local-smoke-token`. The Harvester directory contains `kubeconfig`. Credentials are mounted read-only.
@@ -71,7 +72,7 @@ openssl x509 -in "$TLS_DIR/tls.crt" -noout -dates -ext subjectAltName
 
 ## Logging
 
-- The server writes JSON logs to stdout for startup, preflight, recovery, cleanup, mutations, shutdown, and HTTP responses. Response entries include method, path, status, size, and duration.
+- The server writes JSON logs to stdout for startup, preflight, recovery, cleanup, mutations, shutdown, and HTTP responses. Response entries include method, path, remote IP, status, size, and duration. The remote IP is the directly connected peer; forwarding headers are ignored.
 - Client errors use `WARN`; server and Harvester errors use `ERROR`. Resource events include namespace, resource ID, and GitHub ownership fields.
 - Authorization headers, request bodies, SSH public keys, and cloud-init data are not logged. Collect stdout with the service manager or container runtime.
 - The CLI and live smoke test write per-call JSON logs to stderr.

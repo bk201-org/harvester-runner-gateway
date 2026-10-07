@@ -12,6 +12,12 @@ services:
     # the current container running.
     pull_policy: always
     restart: unless-stopped
+    # Rotate logs regardless of the host's Docker daemon defaults.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     # Run as the host user that owns the mounted files.
     user: "${GATEWAY_UID:?set GATEWAY_UID in .env}:${GATEWAY_GID:?set GATEWAY_GID in .env}"
     working_dir: /
