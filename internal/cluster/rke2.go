@@ -20,6 +20,7 @@ var rke2Dist = distribution{
 	serverUnit:     "rke2-server",
 	agentUnit:      "rke2-agent",
 	joinPort:       "9345",
+	registriesPath: "/etc/rancher/rke2/registries.yaml",
 	scripts:        parseScripts("scripts/rke2.sh.tmpl", "scripts/start-service.sh.tmpl"),
 }
 

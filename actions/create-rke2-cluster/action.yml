@@ -51,6 +51,9 @@ inputs:
   user-data:
     description: Optional additional #cloud-config YAML
     required: false
+  registry-mirrors:
+    description: Optional YAML or JSON list of registry mirrors, each with registry (host, host:port, or *) and endpoint (http or https URL); written to /etc/rancher/rke2/registries.yaml on every node before install
+    required: false
   wait-timeout-seconds:
     description: Shared timeout for all VMs to become ready
     required: false

@@ -1,0 +1,20 @@
+{{- /*
+Writes the distribution's registries.yaml so images are pulled through the
+configured mirrors. It runs on every node before the installer starts the
+service, and renders nothing when no mirrors are configured. The file holds
+only mirror endpoints, never credentials, so it is printed to the log.
+*/ -}}
+
+{{define "registries" -}}
+{{- if .RegistriesYAML -}}
+echo "== registry mirrors =="
+(
+umask 077
+mkdir -p {{shq (dir .RegistriesPath)}}
+cat > {{shq .RegistriesPath}} <<'REGISTRIES'
+{{.RegistriesYAML -}}
+REGISTRIES
+)
+cat {{shq .RegistriesPath}}
+{{end -}}
+{{end}}

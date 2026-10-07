@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -52,6 +53,8 @@ type distribution struct {
 	agentUnit    string
 	// joinPort is where agents register with the server.
 	joinPort string
+	// registriesPath is where registry mirrors are written on every node.
+	registriesPath string
 	// scripts renders install.sh.tmpl with the distribution's "environment"
 	// and "install" templates; see parseScripts.
 	scripts *template.Template
@@ -60,12 +63,13 @@ type distribution struct {
 //go:embed scripts/*.sh.tmpl
 var scriptFS embed.FS
 
-var scriptFuncs = template.FuncMap{"shq": shellQuote, "yamlq": yamlQuote}
+var scriptFuncs = template.FuncMap{"shq": shellQuote, "yamlq": yamlQuote, "dir": path.Dir}
 
-// parseScripts parses install.sh.tmpl together with the files that define a
-// distribution's "environment" and "install" templates.
+// parseScripts parses install.sh.tmpl and registries.sh.tmpl together with
+// the files that define a distribution's "environment" and "install"
+// templates.
 func parseScripts(files ...string) *template.Template {
-	files = append([]string{"scripts/install.sh.tmpl"}, files...)
+	files = append([]string{"scripts/install.sh.tmpl", "scripts/registries.sh.tmpl"}, files...)
 	return template.Must(template.New("").Funcs(scriptFuncs).ParseFS(scriptFS, files...))
 }
 
@@ -79,7 +83,10 @@ type installData struct {
 	Token       string
 	NodeName    string
 	// JoinURL is empty on the server.
-	JoinURL string
+	JoinURL        string
+	RegistriesPath string
+	// RegistriesYAML is the registries.yaml content, empty without mirrors.
+	RegistriesYAML string
 }
 
 var k3sDist = distribution{
@@ -95,6 +102,7 @@ var k3sDist = distribution{
 	serverUnit:     "k3s",
 	agentUnit:      "k3s-agent",
 	joinPort:       kubeAPIPort,
+	registriesPath: "/etc/rancher/k3s/registries.yaml",
 	scripts:        parseScripts("scripts/k3s.sh.tmpl"),
 }
 
@@ -103,6 +111,7 @@ type installOptions struct {
 	Version        string
 	SSHTimeout     time.Duration
 	InstallTimeout time.Duration
+	Mirrors        []registryMirror
 }
 
 // remoteRunner runs a bash script on a VM, as root when root is true, and
@@ -200,6 +209,11 @@ func readInstallOptions(getenv func(string) string, dist *distribution) (install
 		}
 		*field.target = time.Duration(seconds) * time.Second
 	}
+	mirrors, err := parseRegistryMirrors(getenv("INPUT_REGISTRY-MIRRORS"))
+	if err != nil {
+		return opt, fmt.Errorf("registry-mirrors: %w", err)
+	}
+	opt.Mirrors = mirrors
 	return opt, nil
 }
 
@@ -265,7 +279,7 @@ func setupKube(ctx context.Context, runner remoteRunner, cluster vmCluster, opt 
 		}
 		logf("installing %s %s on %s (version %s, server %s)", dist.name, role, status.ID, versionLabel(opt.Version), joinURL)
 		started := time.Now()
-		script, err := installScript(dist, role, opt.Version, token, status.ID, url)
+		script, err := installScript(dist, role, opt.Version, token, status.ID, url, opt.Mirrors)
 		if err != nil {
 			return "", err
 		}
@@ -394,17 +408,23 @@ func diagnose(runner remoteRunner, dist *distribution, sshConfig, id, role strin
 	logf("last %s log lines from %s:\n%s", unit, id, strings.TrimSpace(out))
 }
 
-func installScript(dist *distribution, role, version, token, nodeName, joinURL string) (string, error) {
+func installScript(dist *distribution, role, version, token, nodeName, joinURL string, mirrors []registryMirror) (string, error) {
+	registries, err := registriesYAML(mirrors)
+	if err != nil {
+		return "", err
+	}
 	var script strings.Builder
-	err := dist.scripts.ExecuteTemplate(&script, "install.sh.tmpl", installData{
-		Name:        dist.name,
-		InstallURL:  dist.installURL,
-		InstallHost: strings.TrimPrefix(dist.installURL, "https://"),
-		Role:        role,
-		Version:     version,
-		Token:       token,
-		NodeName:    nodeName,
-		JoinURL:     joinURL,
+	err = dist.scripts.ExecuteTemplate(&script, "install.sh.tmpl", installData{
+		Name:           dist.name,
+		InstallURL:     dist.installURL,
+		InstallHost:    strings.TrimPrefix(dist.installURL, "https://"),
+		Role:           role,
+		Version:        version,
+		Token:          token,
+		NodeName:       nodeName,
+		JoinURL:        joinURL,
+		RegistriesPath: dist.registriesPath,
+		RegistriesYAML: registries,
 	})
 	if err != nil {
 		return "", fmt.Errorf("render %s install script: %w", dist.name, err)

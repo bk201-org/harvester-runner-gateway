@@ -75,6 +75,7 @@ jobs:
           ttl-seconds: '3600'
           audience: ${{ env.GATEWAY_AUDIENCE || 'api://harvester-runner-gateway' }}
           ca-cert-path: ${{ env.GATEWAY_CA_CERT }}
+          registry-mirrors: ${{ vars.GATEWAY_REGISTRY_MIRRORS }}
       - name: Verify cluster
         env:
           VM_IDS: ${{ steps.cluster.outputs.vm-ids }}

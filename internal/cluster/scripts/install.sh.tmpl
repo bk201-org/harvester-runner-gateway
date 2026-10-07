@@ -48,5 +48,6 @@ if [ "$downloaded" != true ]; then
   exit 1
 fi
 echo "downloaded installer: $(wc -c < "$installer") bytes"
+{{template "registries" . -}}
 echo "== install {{.Name}} {{.Role}} =="
 {{template "install" . -}}

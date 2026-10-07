@@ -366,7 +366,7 @@ func TestInstallScriptReportsDownloadFailure(t *testing.T) {
 
 func mustInstallScript(t *testing.T, dist *distribution, role, version, token, nodeName, joinURL string) string {
 	t.Helper()
-	script, err := installScript(dist, role, version, token, nodeName, joinURL)
+	script, err := installScript(dist, role, version, token, nodeName, joinURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

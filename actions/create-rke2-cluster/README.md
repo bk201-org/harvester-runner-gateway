@@ -30,6 +30,19 @@ Inputs are the same as `create-ci-cluster`, plus:
   (default 300).
 - `rke2-timeout-seconds`: shared timeout for installing RKE2 and for every node
   to report Ready (default 1200).
+- `registry-mirrors`: optional list of registry mirrors (for example,
+  pull-through caches), in YAML or JSON. Each entry has a `registry` (a host,
+  `host:port`, or `*` for every registry) and an `endpoint` (an `http` or
+  `https` URL without credentials). Entries for the same registry are combined
+  in order. The list is written as
+  [`registries.yaml`](https://docs.rke2.io/install/private_registry) to `/etc/rancher/rke2/registries.yaml` on every node before RKE2 is installed.
+  Registry credentials and TLS settings are not supported.
+
+  ```yaml
+  registry-mirrors: |
+    - registry: docker.io
+      endpoint: http://10.0.10.1:5000
+  ```
 
 The action generates a random join token for each run. It is written to
 `/etc/rancher/rke2/config.yaml` (mode 0600) through SSH standard input and is
@@ -90,7 +103,9 @@ with the same [smoke configuration](../../README.md#local-shell) as
 with 8Gi of memory and a 40Gi boot disk, installs RKE2, checks that every node
 is Ready and that the saved kubeconfig points at the server VM, then deletes
 the VMs. Set `RKE2_VERSION` to pin a release, and `RKE2_SSH_TIMEOUT_SECONDS` or
-`RKE2_TIMEOUT_SECONDS` to change the timeouts. Use `--no-cleanup` to keep the
+`RKE2_TIMEOUT_SECONDS` to change the timeouts. Add a `registryMirrors` array
+(entries with `registry` and `endpoint`) to the smoke configuration to use
+registry mirrors. Use `--no-cleanup` to keep the
 cluster; the script prints the kubeconfig path, SSH commands, and a
 `--cleanup TEMP_DIR` command. The VM settings and `CLUSTER_SMOKE_BINARY` work as
 in the `create-ci-cluster` script. The VMs need outbound access to

@@ -45,6 +45,7 @@ token_file=$(jq -er '.tokenFile | strings | select(length > 0)' "$smoke_config")
 image=$(jq -er '.image | strings | select(length > 0)' "$smoke_config")
 network=$(jq -er '.network | strings | select(length > 0)' "$smoke_config")
 ca_cert=$(jq -er '.caCert // "" | strings' "$smoke_config")
+registry_mirrors=$(jq -c '.registryMirrors // [] | select(length > 0)' "$smoke_config")
 if [[ ! -r "$token_file" || ( -n "$ca_cert" && ! -r "$ca_cert" ) ]]; then
   echo "Cannot read smoke token or CA certificate file" >&2
   exit 2
@@ -183,6 +184,7 @@ env "${common_env[@]}" \
   "INPUT_SSH-TIMEOUT-SECONDS=${RKE2_SSH_TIMEOUT_SECONDS:-300}" \
   "INPUT_RKE2-TIMEOUT-SECONDS=${RKE2_TIMEOUT_SECONDS:-1200}" \
   "INPUT_USER-DATA=$user_data" \
+  "INPUT_REGISTRY-MIRRORS=$registry_mirrors" \
   "$binary" action create-rke2
 
 echo "Validating cluster state and command outputs..."

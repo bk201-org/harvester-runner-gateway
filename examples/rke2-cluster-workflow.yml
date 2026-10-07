@@ -23,6 +23,10 @@ jobs:
           rke2-version: v1.35.2+rke2r1
           binary-url: https://github.com/OWNER/REPO/releases/download/VERSION/hvst-runner-gw-client-linux-amd64
           binary-sha256: REPLACE_WITH_SHA256_FROM_SHA256SUMS
+          # Optional pull-through caches for the cluster images:
+          # registry-mirrors: |
+          #   - registry: docker.io
+          #     endpoint: http://10.0.10.1:5000
       - name: Show nodes
         env:
           KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig-path }}
