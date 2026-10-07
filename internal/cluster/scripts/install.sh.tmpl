@@ -1,0 +1,52 @@
+{{- /*
+Installs a Kubernetes distribution on one VM. It runs as root through
+`bash -s`, so commands redirect stdin to keep them from consuming the rest of
+the script. Nothing here prints the token, so the output is safe to stream to
+the job log.
+
+The distribution template defines "environment" (lines that run first) and
+"install" (lines that run the downloaded "$installer"). Data is installData.
+*/ -}}
+set -euo pipefail
+{{template "environment" . -}}
+echo "== host =="
+hostname || true
+date -u || true
+uname -r || true
+(. /etc/os-release && echo "$PRETTY_NAME") || true
+echo "== network =="
+ip -br addr 2>&1 || true
+ip route 2>&1 || true
+grep -v '^#' /etc/resolv.conf 2>&1 || true
+env | grep -i '^\(http\|https\|no\)_proxy=' || echo "no proxy environment variables"
+getent hosts {{.InstallHost}} || echo "DNS lookup for {{.InstallHost}} failed"
+echo "== download =="
+installer=$(mktemp)
+headers=$(mktemp)
+trap 'rm -f "$installer" "$headers"' EXIT
+downloaded=false
+for attempt in 1 2 3 4 5; do
+  echo "downloading {{.InstallURL}} (attempt $attempt/5)"
+  code=$(curl -sS -L --connect-timeout 15 --max-time 120 -D "$headers" -o "$installer" -w '%{http_code}' {{shq .InstallURL}} </dev/null) || code=000
+  if [ "$code" = 200 ]; then
+    downloaded=true
+    break
+  fi
+  echo "attempt $attempt failed: HTTP status $code"
+  echo "-- response headers --"
+  cat "$headers" || true
+  echo "-- response body (first 500 bytes) --"
+  head -c 500 "$installer" || true
+  echo
+  if [ "$attempt" -lt 5 ]; then
+    echo "retrying in $((attempt * 5))s"
+    sleep $((attempt * 5))
+  fi
+done
+if [ "$downloaded" != true ]; then
+  echo "could not download the {{.Name}} installer" >&2
+  exit 1
+fi
+echo "downloaded installer: $(wc -c < "$installer") bytes"
+echo "== install {{.Name}} {{.Role}} =="
+{{template "install" . -}}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -50,11 +52,34 @@ type distribution struct {
 	agentUnit    string
 	// joinPort is where agents register with the server.
 	joinPort string
-	// environment returns script lines that run before the installer is
-	// downloaded; install returns the lines that run it. Neither may print
-	// the token.
-	environment func(role, version, token, nodeName, joinURL string) string
-	install     func(role, version, token, nodeName, joinURL string) string
+	// scripts renders install.sh.tmpl with the distribution's "environment"
+	// and "install" templates; see parseScripts.
+	scripts *template.Template
+}
+
+//go:embed scripts/*.sh.tmpl
+var scriptFS embed.FS
+
+var scriptFuncs = template.FuncMap{"shq": shellQuote, "yamlq": yamlQuote}
+
+// parseScripts parses install.sh.tmpl together with the files that define a
+// distribution's "environment" and "install" templates.
+func parseScripts(files ...string) *template.Template {
+	files = append([]string{"scripts/install.sh.tmpl"}, files...)
+	return template.Must(template.New("").Funcs(scriptFuncs).ParseFS(scriptFS, files...))
+}
+
+// installData is the data for install.sh.tmpl.
+type installData struct {
+	Name        string
+	InstallURL  string
+	InstallHost string
+	Role        string
+	Version     string
+	Token       string
+	NodeName    string
+	// JoinURL is empty on the server.
+	JoinURL string
 }
 
 var k3sDist = distribution{
@@ -70,8 +95,7 @@ var k3sDist = distribution{
 	serverUnit:     "k3s",
 	agentUnit:      "k3s-agent",
 	joinPort:       kubeAPIPort,
-	environment:    k3sEnvironment,
-	install:        k3sInstall,
+	scripts:        parseScripts("scripts/k3s.sh.tmpl"),
 }
 
 type installOptions struct {
@@ -241,8 +265,11 @@ func setupKube(ctx context.Context, runner remoteRunner, cluster vmCluster, opt 
 		}
 		logf("installing %s %s on %s (version %s, server %s)", dist.name, role, status.ID, versionLabel(opt.Version), joinURL)
 		started := time.Now()
-		_, err := runner.Run(installCtx, cluster.ConfigPath, status.ID, true,
-			installScript(dist, role, opt.Version, token, status.ID, url), logWriter)
+		script, err := installScript(dist, role, opt.Version, token, status.ID, url)
+		if err != nil {
+			return "", err
+		}
+		_, err = runner.Run(installCtx, cluster.ConfigPath, status.ID, true, script, logWriter)
 		if err != nil {
 			logf("%s %s install on %s failed after %s", dist.name, role, status.ID, time.Since(started).Round(time.Second))
 			if installCtx.Err() != nil {
@@ -367,74 +394,22 @@ func diagnose(runner remoteRunner, dist *distribution, sshConfig, id, role strin
 	logf("last %s log lines from %s:\n%s", unit, id, strings.TrimSpace(out))
 }
 
-func installScript(dist *distribution, role, version, token, nodeName, joinURL string) string {
-	host := strings.TrimPrefix(dist.installURL, "https://")
+func installScript(dist *distribution, role, version, token, nodeName, joinURL string) (string, error) {
 	var script strings.Builder
-	script.WriteString("set -euo pipefail\n")
-	script.WriteString(dist.environment(role, version, token, nodeName, joinURL))
-	// Redirect stdin so no command consumes the rest of this script. Nothing
-	// below prints the token, so the output is safe to stream to the job log.
-	script.WriteString(`echo "== host =="
-hostname || true
-date -u || true
-uname -r || true
-(. /etc/os-release && echo "$PRETTY_NAME") || true
-echo "== network =="
-ip -br addr 2>&1 || true
-ip route 2>&1 || true
-grep -v '^#' /etc/resolv.conf 2>&1 || true
-env | grep -i '^\(http\|https\|no\)_proxy=' || echo "no proxy environment variables"
-getent hosts ` + host + ` || echo "DNS lookup for ` + host + ` failed"
-echo "== download =="
-installer=$(mktemp)
-headers=$(mktemp)
-trap 'rm -f "$installer" "$headers"' EXIT
-downloaded=false
-for attempt in 1 2 3 4 5; do
-  echo "downloading ` + dist.installURL + ` (attempt $attempt/5)"
-  code=$(curl -sS -L --connect-timeout 15 --max-time 120 -D "$headers" -o "$installer" -w '%{http_code}' ` + shellQuote(dist.installURL) + ` </dev/null) || code=000
-  if [ "$code" = 200 ]; then
-    downloaded=true
-    break
-  fi
-  echo "attempt $attempt failed: HTTP status $code"
-  echo "-- response headers --"
-  cat "$headers" || true
-  echo "-- response body (first 500 bytes) --"
-  head -c 500 "$installer" || true
-  echo
-  if [ "$attempt" -lt 5 ]; then
-    echo "retrying in $((attempt * 5))s"
-    sleep $((attempt * 5))
-  fi
-done
-if [ "$downloaded" != true ]; then
-  echo "could not download the ` + dist.name + ` installer" >&2
-  exit 1
-fi
-echo "downloaded installer: $(wc -c < "$installer") bytes"
-echo "== install ` + dist.name + ` ` + role + ` =="
-`)
-	script.WriteString(dist.install(role, version, token, nodeName, joinURL))
-	return script.String()
-}
-
-// k3sEnvironment exports the k3s installer settings; get.k3s.io also starts
-// the service.
-func k3sEnvironment(_, version, token, nodeName, joinURL string) string {
-	var script strings.Builder
-	fmt.Fprintf(&script, "export K3S_TOKEN=%s\nexport K3S_NODE_NAME=%s\n", shellQuote(token), shellQuote(nodeName))
-	if version != "" {
-		fmt.Fprintf(&script, "export INSTALL_K3S_VERSION=%s\n", shellQuote(version))
+	err := dist.scripts.ExecuteTemplate(&script, "install.sh.tmpl", installData{
+		Name:        dist.name,
+		InstallURL:  dist.installURL,
+		InstallHost: strings.TrimPrefix(dist.installURL, "https://"),
+		Role:        role,
+		Version:     version,
+		Token:       token,
+		NodeName:    nodeName,
+		JoinURL:     joinURL,
+	})
+	if err != nil {
+		return "", fmt.Errorf("render %s install script: %w", dist.name, err)
 	}
-	if joinURL != "" {
-		fmt.Fprintf(&script, "export K3S_URL=%s\n", shellQuote(joinURL))
-	}
-	return script.String()
-}
-
-func k3sInstall(role, _, _, _, _ string) string {
-	return fmt.Sprintf("sh \"$installer\" %s </dev/null\n", role)
+	return script.String(), nil
 }
 
 func versionLabel(version string) string {

@@ -1,0 +1,23 @@
+{{- /*
+RKE2 settings for install.sh.tmpl. get.rke2.io does not start the service, and
+the token, node name, and join URL go in the config file. The file holds the
+token, so it is written through a quoted here-document and never printed.
+*/ -}}
+
+{{define "environment"}}{{end}}
+
+{{define "install" -}}
+(
+umask 077
+mkdir -p '/etc/rancher/rke2'
+cat > '/etc/rancher/rke2/config.yaml' <<'RKE2_CONFIG'
+token: {{yamlq .Token}}
+node-name: {{yamlq .NodeName}}
+{{- if .JoinURL}}
+server: {{yamlq .JoinURL}}
+{{- end}}
+RKE2_CONFIG
+)
+INSTALL_RKE2_TYPE={{shq .Role}}{{if .Version}} INSTALL_RKE2_VERSION={{shq .Version}}{{end}} sh "$installer" </dev/null
+{{template "start-service" printf "rke2-%s.service" .Role}}
+{{- end}}

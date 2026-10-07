@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/bk201-org/harvester-runner-gateway/client"
@@ -289,7 +290,7 @@ func TestCreateK3sWritesOutputs(t *testing.T) {
 }
 
 func TestInstallScriptIsVerboseAndKeepsTokenPrivate(t *testing.T) {
-	script := installScript(&k3sDist, "server", "v1.35.2+k3s1", "s3cret-token", "vm-1", "")
+	script := mustInstallScript(t, &k3sDist, "server", "v1.35.2+k3s1", "s3cret-token", "vm-1", "")
 	for _, want := range []string{"== network ==", "getent hosts get.k3s.io", "response headers", "response body", "attempt $attempt failed: HTTP status $code", "== install k3s server =="} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("install script lacks %q: %s", want, script)
@@ -348,7 +349,7 @@ func TestInstallScriptReportsDownloadFailure(t *testing.T) {
 	}
 	cmd := exec.Command(bash, "-s")
 	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd.Stdin = strings.NewReader(installScript(&k3sDist, "server", "", "tok", "vm-1", ""))
+	cmd.Stdin = strings.NewReader(mustInstallScript(t, &k3sDist, "server", "", "tok", "vm-1", ""))
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("script succeeded despite HTTP 500: %s", out)
@@ -361,4 +362,22 @@ func TestInstallScriptReportsDownloadFailure(t *testing.T) {
 	if strings.Contains(string(out), "tok\n") {
 		t.Fatalf("output leaks the token:\n%s", out)
 	}
+}
+
+func mustInstallScript(t *testing.T, dist *distribution, role, version, token, nodeName, joinURL string) string {
+	t.Helper()
+	script, err := installScript(dist, role, version, token, nodeName, joinURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func renderScript(t *testing.T, scripts *template.Template, name string, data any) string {
+	t.Helper()
+	var out strings.Builder
+	if err := scripts.ExecuteTemplate(&out, name, data); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
 }

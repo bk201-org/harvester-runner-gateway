@@ -157,7 +157,7 @@ func TestCreateRKE2WritesOutputs(t *testing.T) {
 }
 
 func TestRKE2InstallScriptKeepsTokenPrivate(t *testing.T) {
-	script := installScript(&rke2Dist, "agent", "", "s3cret-token", "vm-1", "https://10.0.0.1:9345")
+	script := mustInstallScript(t, &rke2Dist, "agent", "", "s3cret-token", "vm-1", "https://10.0.0.1:9345")
 	for _, want := range []string{"getent hosts get.rke2.io", "== install rke2 agent ==", "umask 077", "<<'RKE2_CONFIG'"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("install script lacks %q: %s", want, script)
@@ -187,7 +187,7 @@ func TestRKE2InstallScriptReportsDownloadFailure(t *testing.T) {
 	}
 	cmd := exec.Command(bash, "-s")
 	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd.Stdin = strings.NewReader(installScript(&rke2Dist, "server", "", "tok", "vm-1", ""))
+	cmd.Stdin = strings.NewReader(mustInstallScript(t, &rke2Dist, "server", "", "tok", "vm-1", ""))
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("script succeeded despite HTTP 503: %s", out)
@@ -233,7 +233,7 @@ func TestStartServiceScriptWaitsAndReportsProgress(t *testing.T) {
 		}
 		cmd := exec.Command(bash, "-s")
 		cmd.Env = append(os.Environ(), "TOOL_DIR="+dir, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-		cmd.Stdin = strings.NewReader("set -euo pipefail\n" + startServiceScript("rke2-agent.service"))
+		cmd.Stdin = strings.NewReader("set -euo pipefail\n" + renderScript(t, rke2Dist.scripts, "start-service", "rke2-agent.service"))
 		out, err := cmd.CombinedOutput()
 		calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 		if !strings.HasPrefix(string(calls), "enable --now --no-block rke2-agent.service\n") {

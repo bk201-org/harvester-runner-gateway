@@ -1,0 +1,19 @@
+{{- /*
+k3s settings for install.sh.tmpl. get.k3s.io reads them from the environment
+and also starts the service.
+*/ -}}
+
+{{define "environment" -}}
+export K3S_TOKEN={{shq .Token}}
+export K3S_NODE_NAME={{shq .NodeName}}
+{{- if .Version}}
+export INSTALL_K3S_VERSION={{shq .Version}}
+{{- end}}
+{{- if .JoinURL}}
+export K3S_URL={{shq .JoinURL}}
+{{- end}}
+{{end}}
+
+{{define "install" -}}
+sh "$installer" {{.Role}} </dev/null
+{{end}}
