@@ -43,6 +43,10 @@ Inputs are the same as `create-ci-cluster`, plus:
     - registry: docker.io
       endpoint: http://10.0.10.1:5000
   ```
+- `system-default-registry`: optional registry host or `host:port` (no scheme
+  or path) that prefixes the rke2 system images, for example
+  `registry.example.com:5000`. It is written as `system-default-registry` to
+  `/etc/rancher/rke2/config.yaml` on every node before rke2 is installed.
 
 The action generates a random join token for each run. It is written to
 `/etc/rancher/rke2/config.yaml` (mode 0600) through SSH standard input and is
@@ -103,7 +107,8 @@ with the same [smoke configuration](../../README.md#local-shell) as
 with 8Gi of memory and a 40Gi boot disk, installs RKE2, checks that every node
 is Ready and that the saved kubeconfig points at the server VM, then deletes
 the VMs. Set `RKE2_VERSION` to pin a release, and `RKE2_SSH_TIMEOUT_SECONDS` or
-`RKE2_TIMEOUT_SECONDS` to change the timeouts. Add a `registryMirrors` array
+`RKE2_TIMEOUT_SECONDS` to change the timeouts. Add a `systemDefaultRegistry`
+string or a `registryMirrors` array
 (entries with `registry` and `endpoint`) to the smoke configuration to use
 registry mirrors. Use `--no-cleanup` to keep the
 cluster; the script prints the kubeconfig path, SSH commands, and a

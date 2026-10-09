@@ -110,7 +110,7 @@ func TestInstallScriptWritesRegistries(t *testing.T) {
 		dist *distribution
 		path string
 	}{{&k3sDist, "/etc/rancher/k3s/registries.yaml"}, {&rke2Dist, "/etc/rancher/rke2/registries.yaml"}} {
-		script, err := installScript(tc.dist, "agent", "", "tok", "vm-1", "https://10.0.0.1:"+tc.dist.joinPort, mirrors)
+		script, err := installScript(tc.dist, "agent", "", "tok", "vm-1", "https://10.0.0.1:"+tc.dist.joinPort, mirrors, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -166,6 +166,34 @@ func TestSetupKubeWritesRegistriesOnEveryNode(t *testing.T) {
 	for _, call := range installs {
 		if !strings.Contains(call.script, "cat > '/etc/rancher/rke2/registries.yaml'") || !strings.Contains(call.script, "    - http://10.0.10.1:5000\n") {
 			t.Fatalf("%s script lacks registries.yaml:\n%s", call.host, call.script)
+		}
+	}
+}
+
+func TestSystemDefaultRegistry(t *testing.T) {
+	for _, dist := range []*distribution{&k3sDist, &rke2Dist} {
+		env := map[string]string{"INPUT_SYSTEM-DEFAULT-REGISTRY": " registry.example.com:5000 "}
+		opt, err := readInstallOptions(func(k string) string { return env[k] }, dist)
+		if err != nil || opt.SystemDefaultRegistry != "registry.example.com:5000" {
+			t.Fatalf("%s options = %#v, %v", dist.name, opt, err)
+		}
+		for _, bad := range []string{"https://r.example", "r.example/path", "*", "a b"} {
+			env["INPUT_SYSTEM-DEFAULT-REGISTRY"] = bad
+			if _, err := readInstallOptions(func(k string) string { return env[k] }, dist); err == nil ||
+				!strings.HasPrefix(err.Error(), "system-default-registry:") {
+				t.Fatalf("%s %q error = %v", dist.name, bad, err)
+			}
+		}
+		script, err := installScript(dist, "server", "", "tok", "vm-1", "", nil, "registry.example.com:5000")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := "/etc/rancher/" + dist.name + "/config.yaml"
+		if !strings.Contains(script, "cat > '"+path+"'") || !strings.Contains(script, "system-default-registry: 'registry.example.com:5000'\n") {
+			t.Fatalf("%s script lacks system-default-registry:\n%s", dist.name, script)
+		}
+		if plain := mustInstallScript(t, dist, "server", "", "tok", "vm-1", ""); strings.Contains(plain, "system-default-registry") {
+			t.Fatalf("%s script without the option mentions it:\n%s", dist.name, plain)
 		}
 	}
 }

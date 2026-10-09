@@ -103,3 +103,15 @@ func validateEndpoint(endpoint string) error {
 	}
 	return nil
 }
+
+// validateSystemDefaultRegistry accepts an empty value or a registry host with
+// an optional port, without a scheme or path.
+func validateSystemDefaultRegistry(registry string) error {
+	if registry == "" {
+		return nil
+	}
+	if registry == "*" || !registryPattern.MatchString(registry) {
+		return fmt.Errorf("%q must be a host or host:port without a scheme or path", registry)
+	}
+	return nil
+}

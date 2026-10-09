@@ -15,5 +15,14 @@ export K3S_URL={{shq .JoinURL}}
 {{end}}
 
 {{define "install" -}}
+{{- if .SystemDefaultRegistry -}}
+(
+umask 077
+mkdir -p '/etc/rancher/k3s'
+cat > '/etc/rancher/k3s/config.yaml' <<'K3S_CONFIG'
+system-default-registry: {{yamlq .SystemDefaultRegistry}}
+K3S_CONFIG
+)
+{{end -}}
 sh "$installer" {{.Role}} </dev/null
 {{end}}

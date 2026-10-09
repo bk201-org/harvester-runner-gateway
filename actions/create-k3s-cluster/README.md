@@ -35,6 +35,10 @@ Inputs are the same as `create-ci-cluster`, plus:
     - registry: docker.io
       endpoint: http://10.0.10.1:5000
   ```
+- `system-default-registry`: optional registry host or `host:port` (no scheme
+  or path) that prefixes the k3s system images, for example
+  `registry.example.com:5000`. It is written as `system-default-registry` to
+  `/etc/rancher/k3s/config.yaml` on every node before k3s is installed.
 
 The action generates a random join token for each run. It is passed to the VMs
 on SSH standard input and is neither logged nor exposed as an output. Each node
@@ -82,7 +86,8 @@ same [smoke configuration](../../README.md#local-shell) as
 `scripts/cluster-smoke.sh`. It creates 2 VMs by default (`GATEWAY_VM_COUNT`),
 installs k3s, checks that every node is Ready and that the saved kubeconfig
 points at the server VM, then deletes the VMs. Set `K3S_VERSION` to pin a
-release. Add a `registryMirrors` array (entries with `registry` and `endpoint`)
+release. Add a `systemDefaultRegistry` string or a `registryMirrors` array (entries
+with `registry` and `endpoint`)
 to the smoke configuration to use registry mirrors. Use `--no-cleanup` to keep the cluster; the script prints the kubeconfig
 path, SSH commands, and a `--cleanup TEMP_DIR` command. The VM settings and
 `CLUSTER_SMOKE_BINARY` work as in the `create-ci-cluster` script. The VMs need

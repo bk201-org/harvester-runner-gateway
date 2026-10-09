@@ -87,6 +87,8 @@ type installData struct {
 	RegistriesPath string
 	// RegistriesYAML is the registries.yaml content, empty without mirrors.
 	RegistriesYAML string
+	// SystemDefaultRegistry is empty to keep the upstream registry.
+	SystemDefaultRegistry string
 }
 
 var k3sDist = distribution{
@@ -112,6 +114,9 @@ type installOptions struct {
 	SSHTimeout     time.Duration
 	InstallTimeout time.Duration
 	Mirrors        []registryMirror
+	// SystemDefaultRegistry prefixes the distribution's system images; empty
+	// keeps the upstream registry.
+	SystemDefaultRegistry string
 }
 
 // remoteRunner runs a bash script on a VM, as root when root is true, and
@@ -214,6 +219,10 @@ func readInstallOptions(getenv func(string) string, dist *distribution) (install
 		return opt, fmt.Errorf("registry-mirrors: %w", err)
 	}
 	opt.Mirrors = mirrors
+	opt.SystemDefaultRegistry = strings.TrimSpace(getenv("INPUT_SYSTEM-DEFAULT-REGISTRY"))
+	if err := validateSystemDefaultRegistry(opt.SystemDefaultRegistry); err != nil {
+		return opt, fmt.Errorf("system-default-registry: %w", err)
+	}
 	return opt, nil
 }
 
@@ -279,7 +288,7 @@ func setupKube(ctx context.Context, runner remoteRunner, cluster vmCluster, opt 
 		}
 		logf("installing %s %s on %s (version %s, server %s)", dist.name, role, status.ID, versionLabel(opt.Version), joinURL)
 		started := time.Now()
-		script, err := installScript(dist, role, opt.Version, token, status.ID, url, opt.Mirrors)
+		script, err := installScript(dist, role, opt.Version, token, status.ID, url, opt.Mirrors, opt.SystemDefaultRegistry)
 		if err != nil {
 			return "", err
 		}
@@ -408,7 +417,7 @@ func diagnose(runner remoteRunner, dist *distribution, sshConfig, id, role strin
 	logf("last %s log lines from %s:\n%s", unit, id, strings.TrimSpace(out))
 }
 
-func installScript(dist *distribution, role, version, token, nodeName, joinURL string, mirrors []registryMirror) (string, error) {
+func installScript(dist *distribution, role, version, token, nodeName, joinURL string, mirrors []registryMirror, systemDefaultRegistry string) (string, error) {
 	registries, err := registriesYAML(mirrors)
 	if err != nil {
 		return "", err
@@ -425,6 +434,7 @@ func installScript(dist *distribution, role, version, token, nodeName, joinURL s
 		JoinURL:        joinURL,
 		RegistriesPath: dist.registriesPath,
 		RegistriesYAML: registries,
+		SystemDefaultRegistry: systemDefaultRegistry,
 	})
 	if err != nil {
 		return "", fmt.Errorf("render %s install script: %w", dist.name, err)

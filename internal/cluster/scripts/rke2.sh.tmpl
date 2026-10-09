@@ -16,6 +16,9 @@ node-name: {{yamlq .NodeName}}
 {{- if .JoinURL}}
 server: {{yamlq .JoinURL}}
 {{- end}}
+{{- if .SystemDefaultRegistry}}
+system-default-registry: {{yamlq .SystemDefaultRegistry}}
+{{- end}}
 RKE2_CONFIG
 )
 INSTALL_RKE2_TYPE={{shq .Role}}{{if .Version}} INSTALL_RKE2_VERSION={{shq .Version}}{{end}} sh "$installer" </dev/null
