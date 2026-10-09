@@ -57,6 +57,9 @@ inputs:
   system-default-registry:
     description: Optional registry host or host:port that prefixes the RKE2 system images; written as system-default-registry to /etc/rancher/rke2/config.yaml on every node before install
     required: false
+  artifact-url:
+    description: Optional http or https base URL that replaces https://github.com/rancher/rke2/releases/download for the rke2 binaries and checksums; same layout as GitHub releases
+    required: false
   wait-timeout-seconds:
     description: Shared timeout for all VMs to become ready
     required: false

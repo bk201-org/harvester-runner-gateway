@@ -89,6 +89,9 @@ type installData struct {
 	RegistriesYAML string
 	// SystemDefaultRegistry is empty to keep the upstream registry.
 	SystemDefaultRegistry string
+	// ArtifactURL replaces the release download base URL of the installer;
+	// empty keeps the GitHub releases URL.
+	ArtifactURL string
 }
 
 var k3sDist = distribution{
@@ -117,6 +120,9 @@ type installOptions struct {
 	// SystemDefaultRegistry prefixes the distribution's system images; empty
 	// keeps the upstream registry.
 	SystemDefaultRegistry string
+	// ArtifactURL replaces the release download base URL of the installer;
+	// empty keeps the GitHub releases URL.
+	ArtifactURL string
 }
 
 // remoteRunner runs a bash script on a VM, as root when root is true, and
@@ -223,6 +229,13 @@ func readInstallOptions(getenv func(string) string, dist *distribution) (install
 	if err := validateSystemDefaultRegistry(opt.SystemDefaultRegistry); err != nil {
 		return opt, fmt.Errorf("system-default-registry: %w", err)
 	}
+	opt.ArtifactURL = strings.TrimRight(strings.TrimSpace(getenv("INPUT_ARTIFACT-URL")), "/")
+	if opt.ArtifactURL != "" {
+		if err := validateEndpoint(opt.ArtifactURL); err != nil {
+			// The URL is not echoed, like registry endpoints.
+			return opt, fmt.Errorf("artifact-url: %w", err)
+		}
+	}
 	return opt, nil
 }
 
@@ -288,7 +301,7 @@ func setupKube(ctx context.Context, runner remoteRunner, cluster vmCluster, opt 
 		}
 		logf("installing %s %s on %s (version %s, server %s)", dist.name, role, status.ID, versionLabel(opt.Version), joinURL)
 		started := time.Now()
-		script, err := installScript(dist, role, opt.Version, token, status.ID, url, opt.Mirrors, opt.SystemDefaultRegistry)
+		script, err := installScript(dist, role, opt.Version, token, status.ID, url, opt.Mirrors, opt.SystemDefaultRegistry, opt.ArtifactURL)
 		if err != nil {
 			return "", err
 		}
@@ -417,24 +430,25 @@ func diagnose(runner remoteRunner, dist *distribution, sshConfig, id, role strin
 	logf("last %s log lines from %s:\n%s", unit, id, strings.TrimSpace(out))
 }
 
-func installScript(dist *distribution, role, version, token, nodeName, joinURL string, mirrors []registryMirror, systemDefaultRegistry string) (string, error) {
+func installScript(dist *distribution, role, version, token, nodeName, joinURL string, mirrors []registryMirror, systemDefaultRegistry, artifactURL string) (string, error) {
 	registries, err := registriesYAML(mirrors)
 	if err != nil {
 		return "", err
 	}
 	var script strings.Builder
 	err = dist.scripts.ExecuteTemplate(&script, "install.sh.tmpl", installData{
-		Name:           dist.name,
-		InstallURL:     dist.installURL,
-		InstallHost:    strings.TrimPrefix(dist.installURL, "https://"),
-		Role:           role,
-		Version:        version,
-		Token:          token,
-		NodeName:       nodeName,
-		JoinURL:        joinURL,
-		RegistriesPath: dist.registriesPath,
-		RegistriesYAML: registries,
+		Name:                  dist.name,
+		InstallURL:            dist.installURL,
+		InstallHost:           strings.TrimPrefix(dist.installURL, "https://"),
+		Role:                  role,
+		Version:               version,
+		Token:                 token,
+		NodeName:              nodeName,
+		JoinURL:               joinURL,
+		RegistriesPath:        dist.registriesPath,
+		RegistriesYAML:        registries,
 		SystemDefaultRegistry: systemDefaultRegistry,
+		ArtifactURL:           artifactURL,
 	})
 	if err != nil {
 		return "", fmt.Errorf("render %s install script: %w", dist.name, err)

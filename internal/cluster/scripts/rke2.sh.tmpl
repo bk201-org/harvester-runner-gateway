@@ -21,6 +21,6 @@ system-default-registry: {{yamlq .SystemDefaultRegistry}}
 {{- end}}
 RKE2_CONFIG
 )
-INSTALL_RKE2_TYPE={{shq .Role}}{{if .Version}} INSTALL_RKE2_VERSION={{shq .Version}}{{end}} sh "$installer" </dev/null
+INSTALL_RKE2_TYPE={{shq .Role}}{{if .Version}} INSTALL_RKE2_VERSION={{shq .Version}}{{end}}{{if .ArtifactURL}} INSTALL_RKE2_ARTIFACT_URL={{shq .ArtifactURL}}{{end}} sh "$installer" </dev/null
 {{template "start-service" printf "rke2-%s.service" .Role}}
 {{- end}}

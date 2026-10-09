@@ -57,6 +57,9 @@ inputs:
   system-default-registry:
     description: Optional registry host or host:port that prefixes the k3s system images; written as system-default-registry to /etc/rancher/k3s/config.yaml on every node before install
     required: false
+  artifact-url:
+    description: Optional http or https base URL that replaces https://github.com/k3s-io/k3s/releases/download for the k3s binaries and checksums; same layout as GitHub releases
+    required: false
   wait-timeout-seconds:
     description: Shared timeout for all VMs to become ready
     required: false

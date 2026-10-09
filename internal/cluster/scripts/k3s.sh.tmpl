@@ -12,6 +12,9 @@ export INSTALL_K3S_VERSION={{shq .Version}}
 {{- if .JoinURL}}
 export K3S_URL={{shq .JoinURL}}
 {{- end}}
+{{- if .ArtifactURL}}
+export INSTALL_K3S_ARTIFACT_URL={{shq .ArtifactURL}}
+{{- end}}
 {{end}}
 
 {{define "install" -}}

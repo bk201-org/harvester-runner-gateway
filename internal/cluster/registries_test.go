@@ -110,7 +110,7 @@ func TestInstallScriptWritesRegistries(t *testing.T) {
 		dist *distribution
 		path string
 	}{{&k3sDist, "/etc/rancher/k3s/registries.yaml"}, {&rke2Dist, "/etc/rancher/rke2/registries.yaml"}} {
-		script, err := installScript(tc.dist, "agent", "", "tok", "vm-1", "https://10.0.0.1:"+tc.dist.joinPort, mirrors, "")
+		script, err := installScript(tc.dist, "agent", "", "tok", "vm-1", "https://10.0.0.1:"+tc.dist.joinPort, mirrors, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +184,7 @@ func TestSystemDefaultRegistry(t *testing.T) {
 				t.Fatalf("%s %q error = %v", dist.name, bad, err)
 			}
 		}
-		script, err := installScript(dist, "server", "", "tok", "vm-1", "", nil, "registry.example.com:5000")
+		script, err := installScript(dist, "server", "", "tok", "vm-1", "", nil, "registry.example.com:5000", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,6 +194,36 @@ func TestSystemDefaultRegistry(t *testing.T) {
 		}
 		if plain := mustInstallScript(t, dist, "server", "", "tok", "vm-1", ""); strings.Contains(plain, "system-default-registry") {
 			t.Fatalf("%s script without the option mentions it:\n%s", dist.name, plain)
+		}
+	}
+}
+
+func TestArtifactURL(t *testing.T) {
+	for _, tc := range []struct {
+		dist *distribution
+		want string
+	}{
+		{&k3sDist, "export INSTALL_K3S_ARTIFACT_URL='https://mirror.example/k3s/download'\n"},
+		{&rke2Dist, " INSTALL_RKE2_ARTIFACT_URL='https://mirror.example/k3s/download' sh"},
+	} {
+		env := map[string]string{"INPUT_ARTIFACT-URL": " https://mirror.example/k3s/download/ "}
+		opt, err := readInstallOptions(func(k string) string { return env[k] }, tc.dist)
+		if err != nil || opt.ArtifactURL != "https://mirror.example/k3s/download" {
+			t.Fatalf("%s options = %#v, %v", tc.dist.name, opt, err)
+		}
+		for _, bad := range []string{"mirror.example", "ftp://m", "https://user:pw@m/x", "https://m/x?a=b", "https://m/a b"} {
+			env["INPUT_ARTIFACT-URL"] = bad
+			_, err := readInstallOptions(func(k string) string { return env[k] }, tc.dist)
+			if err == nil || !strings.HasPrefix(err.Error(), "artifact-url:") || strings.Contains(err.Error(), "pw") {
+				t.Fatalf("%s %q error = %v", tc.dist.name, bad, err)
+			}
+		}
+		script, err := installScript(tc.dist, "agent", "", "tok", "vm-1", "https://10.0.0.1:"+tc.dist.joinPort, nil, "", opt.ArtifactURL)
+		if err != nil || !strings.Contains(script, tc.want) {
+			t.Fatalf("%s script lacks %q (%v):\n%s", tc.dist.name, tc.want, err, script)
+		}
+		if plain := mustInstallScript(t, tc.dist, "agent", "", "tok", "vm-1", "https://10.0.0.1:"+tc.dist.joinPort); strings.Contains(plain, "ARTIFACT_URL") {
+			t.Fatalf("%s script without the option mentions it:\n%s", tc.dist.name, plain)
 		}
 	}
 }

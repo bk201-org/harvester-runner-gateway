@@ -45,6 +45,7 @@ token_file=$(jq -er '.tokenFile | strings | select(length > 0)' "$smoke_config")
 image=$(jq -er '.image | strings | select(length > 0)' "$smoke_config")
 network=$(jq -er '.network | strings | select(length > 0)' "$smoke_config")
 ca_cert=$(jq -er '.caCert // "" | strings' "$smoke_config")
+artifact_url=$(jq -r '.artifactURL // ""' "$smoke_config")
 system_default_registry=$(jq -r '.systemDefaultRegistry // ""' "$smoke_config")
 registry_mirrors=$(jq -c '.registryMirrors // [] | select(length > 0)' "$smoke_config")
 if [[ ! -r "$token_file" || ( -n "$ca_cert" && ! -r "$ca_cert" ) ]]; then
@@ -187,6 +188,7 @@ env "${common_env[@]}" \
   "INPUT_USER-DATA=$user_data" \
   "INPUT_REGISTRY-MIRRORS=$registry_mirrors" \
   "INPUT_SYSTEM-DEFAULT-REGISTRY=$system_default_registry" \
+  "INPUT_ARTIFACT-URL=$artifact_url" \
   "$binary" action create-k3s
 
 echo "Validating cluster state and command outputs..."
