@@ -112,7 +112,7 @@ with the same [smoke configuration](../../README.md#local-shell) as
 `scripts/cluster-smoke.sh`. It creates 2 VMs by default (`GATEWAY_VM_COUNT`)
 with 8Gi of memory and a 40Gi boot disk, installs RKE2, checks that every node
 is Ready and that the saved kubeconfig points at the server VM, then deletes
-the VMs. Set `RKE2_VERSION` to pin a release, and `RKE2_SSH_TIMEOUT_SECONDS` or
+the VMs. Set `RKE2_VERSION` (or `rke2Version` in the smoke configuration) to pin a release, and `RKE2_SSH_TIMEOUT_SECONDS` or
 `RKE2_TIMEOUT_SECONDS` to change the timeouts. Add `artifactURL` or `systemDefaultRegistry`
 strings or a `registryMirrors` array
 (entries with `registry` and `endpoint`) to the smoke configuration to use

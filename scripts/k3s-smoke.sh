@@ -10,7 +10,7 @@ Usage: k3s-smoke.sh [--no-cleanup | --cleanup TEMP_DIR]
 
 Creates VMs, installs k3s (first VM as server, others as agents), and checks
 that every node is Ready and the saved kubeconfig points at the server VM.
-Set K3S_VERSION (for example v1.35.2+k3s1) to pin a k3s release.
+Set K3S_VERSION or k3sVersion in the smoke config (for example v1.35.2+k3s1) to pin a k3s release.
 EOF
 }
 
@@ -45,6 +45,7 @@ token_file=$(jq -er '.tokenFile | strings | select(length > 0)' "$smoke_config")
 image=$(jq -er '.image | strings | select(length > 0)' "$smoke_config")
 network=$(jq -er '.network | strings | select(length > 0)' "$smoke_config")
 ca_cert=$(jq -er '.caCert // "" | strings' "$smoke_config")
+config_version=$(jq -r '.k3sVersion // ""' "$smoke_config")
 artifact_url=$(jq -r '.artifactURL // ""' "$smoke_config")
 system_default_registry=$(jq -r '.systemDefaultRegistry // ""' "$smoke_config")
 registry_mirrors=$(jq -c '.registryMirrors // [] | select(length > 0)' "$smoke_config")
@@ -182,7 +183,7 @@ env "${common_env[@]}" \
   "INPUT_USERNAME=${GATEWAY_USERNAME:-ubuntu}" \
   "INPUT_TTL-SECONDS=${GATEWAY_TTL_SECONDS:-3600}" \
   "INPUT_WAIT-TIMEOUT-SECONDS=${GATEWAY_WAIT_TIMEOUT_SECONDS:-600}" \
-  "INPUT_K3S-VERSION=${K3S_VERSION:-}" \
+  "INPUT_K3S-VERSION=${K3S_VERSION:-$config_version}" \
   "INPUT_SSH-TIMEOUT-SECONDS=${K3S_SSH_TIMEOUT_SECONDS:-300}" \
   "INPUT_K3S-TIMEOUT-SECONDS=${K3S_TIMEOUT_SECONDS:-900}" \
   "INPUT_USER-DATA=$user_data" \

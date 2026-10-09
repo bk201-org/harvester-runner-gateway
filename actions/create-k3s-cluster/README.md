@@ -91,7 +91,7 @@ arguments.
 same [smoke configuration](../../README.md#local-shell) as
 `scripts/cluster-smoke.sh`. It creates 2 VMs by default (`GATEWAY_VM_COUNT`),
 installs k3s, checks that every node is Ready and that the saved kubeconfig
-points at the server VM, then deletes the VMs. Set `K3S_VERSION` to pin a
+points at the server VM, then deletes the VMs. Set `K3S_VERSION` (or `k3sVersion` in the smoke configuration) to pin a
 release. Add `artifactURL` or `systemDefaultRegistry` strings or a `registryMirrors` array (entries
 with `registry` and `endpoint`)
 to the smoke configuration to use registry mirrors. Use `--no-cleanup` to keep the cluster; the script prints the kubeconfig
